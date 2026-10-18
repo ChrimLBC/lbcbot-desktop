@@ -31,6 +31,7 @@
         <!-- data-pane maps to a .pane id below; the renderer wires these generically. -->
         <nav class="nav__items">
             <button type="button" class="nav__item is-active" data-pane="status">Status</button>
+            <button type="button" class="nav__item" data-pane="templates">Stream setup</button>
             <button type="button" class="nav__item" data-pane="dashboards">Dashboards</button>
             <button type="button" class="nav__item" data-pane="overlays">Overlays</button>
             <button type="button" class="nav__item" data-pane="settings">Settings</button>
@@ -74,6 +75,31 @@
             </section>
 
             <section class="card">
+                <div class="card__head">
+                    <h3>Streaming platforms</h3>
+                    <button id="refresh-platforms">Refresh</button>
+                </div>
+                <div class="row row--platform">
+                    <span id="twitch-dot" class="dot dot--off"></span>
+                    <span class="platform__name">Twitch</span>
+                    <span id="twitch-state" class="platform__state">Checking…</span>
+                </div>
+                <div class="row row--platform">
+                    <span id="youtube-dot" class="dot dot--off"></span>
+                    <span class="platform__name">YouTube</span>
+                    <span id="youtube-state" class="platform__state">Checking…</span>
+                </div>
+                <div class="row row--actions">
+                    <button id="open-integrations" class="primary">Manage connections</button>
+                </div>
+                <p class="hint">
+                    Connections belong to your account rather than to this machine, so linking happens on the
+                    website and this app picks it up. Opens in your normal browser — a sign-in screen should be
+                    somewhere you can see the real address bar.
+                </p>
+            </section>
+
+            <section class="card">
                 <div class="card__head"><h3>OBS</h3></div>
                 <p class="hint">
                     OBS 28 and later already include the WebSocket server — enable it under Tools → WebSocket
@@ -88,6 +114,101 @@
                     <button id="obs-disconnect">Disconnect</button>
                 </div>
             </section>
+        </section>
+
+        <!-- ------------------------------------------------------------- Templates -->
+        <section class="pane" id="pane-templates">
+            <header class="pane__head">
+                <h2>Stream setup</h2>
+                <p class="pane__sub">
+                    Save a title, category and tags once, then push them to Twitch and YouTube together — for
+                    switching games mid-stream, or getting set up before going live.
+                </p>
+            </header>
+
+            <div class="split">
+                <section class="card split__list">
+                    <div class="card__head">
+                        <h3>Templates</h3>
+                        <button id="template-new" class="primary">New</button>
+                    </div>
+                    <ul id="template-list" class="list"></ul>
+                </section>
+
+                <section class="card split__editor">
+                    <div class="card__head">
+                        <h3 id="template-editor-title">Template</h3>
+                        <button id="template-apply" class="primary">Apply now</button>
+                    </div>
+
+                    <div class="row">
+                        <label for="template-name">Template name</label>
+                        <input id="template-name" type="text" spellcheck="false" placeholder="Spyro" />
+                    </div>
+
+                    <h4 class="group">Twitch</h4>
+                    <div class="row">
+                        <label for="tw-title">Title</label>
+                        <input id="tw-title" type="text" maxlength="140" />
+                    </div>
+                    <div class="row">
+                        <label for="tw-category">Category</label>
+                        <!-- A datalist rather than a custom dropdown: it is a native typeahead that works with
+                             the keyboard for free, and the strict CSP forbids the inline handlers a hand-rolled
+                             one tends to grow. The chosen game_id is held in a hidden field. -->
+                        <input id="tw-category" type="text" list="tw-category-options" autocomplete="off"
+                               placeholder="start typing to search" />
+                        <datalist id="tw-category-options"></datalist>
+                    </div>
+                    <div class="row">
+                        <label for="tw-tags">Tags</label>
+                        <input id="tw-tags" type="text" placeholder="comma, separated" />
+                    </div>
+
+                    <h4 class="group">YouTube</h4>
+                    <div class="row">
+                        <label for="yt-title">Title</label>
+                        <input id="yt-title" type="text" maxlength="100" />
+                    </div>
+                    <div class="row row--tall">
+                        <label for="yt-description">Description</label>
+                        <textarea id="yt-description" rows="4"></textarea>
+                    </div>
+                    <div class="row">
+                        <label for="yt-category">Category</label>
+                        <select id="yt-category"></select>
+                    </div>
+                    <div class="row">
+                        <label for="yt-tags">Tags</label>
+                        <input id="yt-tags" type="text" placeholder="comma, separated" />
+                    </div>
+                    <div class="row">
+                        <label for="yt-language">Language</label>
+                        <input id="yt-language" type="text" placeholder="en" spellcheck="false" />
+                    </div>
+                    <div class="row">
+                        <label for="yt-synthetic">Contains altered or synthetic content</label>
+                        <input id="yt-synthetic" type="checkbox" />
+                    </div>
+
+                    <p class="hint">
+                        Made for kids is always sent as <strong>no</strong>. Declaring a stream child-directed
+                        disables chat, and doing that by accident from a saved template would not be recoverable
+                        mid-stream — set it in YouTube Studio if you ever genuinely need it.
+                    </p>
+                    <p class="hint">
+                        YouTube has no API for the <strong>game</strong> on a gaming stream — it is only settable
+                        through Studio's own picker, so it cannot be part of a template. Twitch's category below
+                        is unaffected.
+                    </p>
+
+                    <div class="row row--actions">
+                        <button id="template-save" class="primary">Save</button>
+                        <button id="template-delete">Delete</button>
+                    </div>
+                    <p id="template-status" class="hint"></p>
+                </section>
+            </div>
         </section>
 
         <!-- ------------------------------------------------------------ Dashboards -->

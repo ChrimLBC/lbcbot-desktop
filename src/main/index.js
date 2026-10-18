@@ -379,6 +379,81 @@ function registerIpc() {
         return result.ok ? result.data : [];
     });
 
+    /** Linked streaming platforms (Twitch / YouTube / Spotify) for this account. */
+    ipcMain.handle('get-platforms', async () => {
+        const result = await lbcbot.getPlatforms();
+        return result.ok ? result.data : null;
+    });
+
+    /**
+     * Send the user to the website to link or unlink a platform.
+     *
+     * Deliberately the site's own Integrations page rather than building the OAuth URL here. That URL needs the
+     * provider client ids and the exact scope list, which live in the frontend's runtime config and change —
+     * duplicating them into a shipped desktop binary means a stale copy that fails silently the next time a
+     * scope is added, and an installed app is the hardest thing in the system to update.
+     *
+     * The system browser, not an app window: this is an OAuth consent screen, and consent should happen somewhere
+     * the user can see the real address bar.
+     */
+    ipcMain.handle('open-integrations', async () => {
+        const site = (store.settings().siteUrl || '').replace(/\/+$/, '');
+        if (!site) {
+            return { ok: false, error: 'No website URL configured.' };
+        }
+        await shell.openExternal(`${site}/integrations`);
+        return { ok: true };
+    });
+
+    /* --------------------------------------------------------------- stream templates */
+
+    ipcMain.handle('get-stream-templates', async () => {
+        const result = await lbcbot.getStreamTemplates();
+        return result.ok ? result.data : [];
+    });
+
+    ipcMain.handle('save-stream-template', async (_event, { id, template }) => {
+        const result = await lbcbot.saveStreamTemplate(id, template);
+        if (!result.ok) {
+            log(`Could not save the template: ${result.error || result.status}`);
+        }
+        return result;
+    });
+
+    ipcMain.handle('delete-stream-template', async (_event, id) => {
+        const result = await lbcbot.deleteStreamTemplate(id);
+        if (!result.ok) {
+            log(`Could not delete the template: ${result.error || result.status}`);
+        }
+        return result;
+    });
+
+    /**
+     * Apply a template. The per-platform outcomes are logged as well as returned: the renderer shows them
+     * inline, but "Twitch updated, YouTube skipped" is exactly the sort of thing worth being able to scroll
+     * back to afterwards.
+     */
+    ipcMain.handle('apply-stream-template', async (_event, id) => {
+        const result = await lbcbot.applyStreamTemplate(id);
+        if (!result.ok) {
+            log(`Could not apply the template: ${result.error || result.status}`);
+            return result;
+        }
+        ['twitch', 'youtube'].forEach((platform) => {
+            const outcome = result.data && result.data[platform];
+            if (outcome && outcome.attempted) {
+                log(`${platform}: ${outcome.message}`);
+            }
+        });
+        return result;
+    });
+
+    ipcMain.handle('search-twitch-categories', async (_event, query) => {
+        const result = await lbcbot.searchTwitchCategories(query);
+        // The shape is Twitch's own { data: [ { id, name, box_art_url } ] }.
+        return result.ok && result.data && Array.isArray(result.data.data) ? result.data.data : [];
+    });
+
     /**
      * One-click overlay setup: mint a scoped overlay key, build the component-view URL, and hand it straight to OBS.
      * The URL is never shown or copied anywhere.

@@ -172,13 +172,271 @@ async function refreshDashboards() {
     }
 }
 
+/* ------------------------------------------------------------------ linked platforms */
+
+/**
+ * Which platforms the ACCOUNT has linked, as opposed to whether this machine is connected to LBCBot.
+ *
+ * Read-only here. Linking is an OAuth consent that has to complete against the website's registered redirect
+ * URI, so the app reports the state and hands off; see the open-integrations handler for why the URL is not
+ * built here.
+ */
+async function refreshPlatforms() {
+    const show = (name, connected, note) => {
+        el(`${name}-dot`).className = `dot ${connected ? 'dot--on' : 'dot--off'}`;
+        const state = el(`${name}-state`);
+        state.textContent = note;
+        state.className = `platform__state${connected ? ' platform__state--on' : ''}`;
+    };
+
+    const data = await window.lbcbot.getPlatforms();
+    if (!data) {
+        // Distinguish "not linked" from "we could not ask" — they look identical otherwise and lead somewhere
+        // completely different.
+        show('twitch', false, 'Connect LBCBot first');
+        show('youtube', false, 'Connect LBCBot first');
+        return;
+    }
+    const linked = data.connectedPlatforms || [];
+    const login = (data.loginPlatform || '').toUpperCase();
+    [['twitch', 'TWITCH'], ['youtube', 'YOUTUBE']].forEach(([id, key]) => {
+        const connected = linked.includes(key);
+        // The login platform cannot be unlinked without losing the way you sign in, so say so rather than
+        // implying it is optional.
+        const note = connected ? (key === login ? 'Connected — sign-in account' : 'Connected') : 'Not connected';
+        show(id, connected, note);
+    });
+}
+
+/* ------------------------------------------------------------------ stream templates */
+
+/**
+ * YouTube's video categories.
+ *
+ * Hard-coded rather than fetched from videoCategories.list: the list is tiny, effectively frozen, and region
+ * dependent in ways that only add failure modes here. These are the ones a live stream plausibly uses; the
+ * blank entry means "leave whatever the broadcast already has".
+ */
+const YT_CATEGORIES = [
+    ['', 'Leave unchanged'],
+    ['20', 'Gaming'],
+    ['24', 'Entertainment'],
+    ['22', 'People & Blogs'],
+    ['10', 'Music'],
+    ['23', 'Comedy'],
+    ['27', 'Education'],
+    ['28', 'Science & Technology'],
+    ['26', 'Howto & Style'],
+    ['17', 'Sports'],
+];
+
+let templates = [];
+/** The template being edited; null means the editor holds an unsaved new one. */
+let selectedTemplateId = null;
+
+function setTemplateStatus(message) {
+    el('template-status').textContent = message || '';
+}
+
+/** Read the editor into the wire shape. Blank strings become null, which the server reads as "leave alone". */
+function readTemplateForm() {
+    const value = (id) => {
+        const raw = el(id).value.trim();
+        return raw === '' ? null : raw;
+    };
+    return {
+        name: value('template-name') || 'Untitled',
+        twitchTitle: value('tw-title'),
+        twitchCategory: value('tw-category'),
+        // Only meaningful while it matches the typed name — see onCategoryInput.
+        twitchCategoryId: el('tw-category').dataset.gameId || null,
+        twitchTags: value('tw-tags'),
+        youtubeTitle: value('yt-title'),
+        youtubeDescription: value('yt-description'),
+        youtubeCategoryId: value('yt-category'),
+        youtubeTags: value('yt-tags'),
+        youtubeLanguage: value('yt-language'),
+        // Never offered in the UI — see the hint in the pane.
+        youtubeMadeForKids: false,
+        youtubeSyntheticMedia: el('yt-synthetic').checked,
+    };
+}
+
+function fillTemplateForm(template) {
+    const t = template || {};
+    el('template-name').value = t.name || '';
+    el('tw-title').value = t.twitchTitle || '';
+    el('tw-category').value = t.twitchCategory || '';
+    el('tw-category').dataset.gameId = t.twitchCategoryId || '';
+    el('tw-tags').value = t.twitchTags || '';
+    el('yt-title').value = t.youtubeTitle || '';
+    el('yt-description').value = t.youtubeDescription || '';
+    el('yt-category').value = t.youtubeCategoryId || '';
+    el('yt-tags').value = t.youtubeTags || '';
+    el('yt-language').value = t.youtubeLanguage || '';
+    el('yt-synthetic').checked = Boolean(t.youtubeSyntheticMedia);
+    el('template-editor-title').textContent = t.streamTemplateId ? (t.name || 'Template') : 'New template';
+    // Apply and Delete are meaningless until the thing exists server-side.
+    el('template-apply').disabled = !t.streamTemplateId;
+    el('template-delete').disabled = !t.streamTemplateId;
+    setTemplateStatus('');
+}
+
+function selectTemplate(id) {
+    selectedTemplateId = id;
+    fillTemplateForm(templates.find((t) => t.streamTemplateId === id));
+    renderTemplateList();
+}
+
+/** Built with textContent and real buttons — template names are user data and this page has a strict CSP. */
+function renderTemplateList() {
+    const list = el('template-list');
+    list.textContent = '';
+    if (!templates.length) {
+        const li = document.createElement('li');
+        li.className = 'muted';
+        li.textContent = 'No templates yet.';
+        list.appendChild(li);
+        return;
+    }
+    templates.forEach((t) => {
+        const li = document.createElement('li');
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = `template-row${t.streamTemplateId === selectedTemplateId ? ' is-active' : ''}`;
+        button.textContent = t.name || `Template ${t.streamTemplateId}`;
+        button.addEventListener('click', () => selectTemplate(t.streamTemplateId));
+        li.appendChild(button);
+        list.appendChild(li);
+    });
+}
+
+async function refreshTemplates(selectId) {
+    templates = (await window.lbcbot.getStreamTemplates()) || [];
+    if (selectId !== undefined) {
+        selectedTemplateId = selectId;
+    }
+    if (selectedTemplateId && !templates.some((t) => t.streamTemplateId === selectedTemplateId)) {
+        selectedTemplateId = null;
+    }
+    renderTemplateList();
+    if (selectedTemplateId) {
+        fillTemplateForm(templates.find((t) => t.streamTemplateId === selectedTemplateId));
+    }
+}
+
+/**
+ * Twitch category typeahead.
+ *
+ * The id is what gets saved, so it is cleared on every keystroke and only re-set when the typed text matches a
+ * suggestion exactly. Otherwise editing "Doom" into "Doom Eternal" would keep Doom's id and silently apply the
+ * wrong game — the server can still resolve a bare name, so losing the id degrades to a lookup rather than an
+ * error.
+ */
+let categoryTimer = null;
+function onCategoryInput() {
+    const input = el('tw-category');
+    const options = el('tw-category-options');
+    const typed = input.value.trim();
+    const match = Array.from(options.options).find((o) => o.value.toLowerCase() === typed.toLowerCase());
+    input.dataset.gameId = match ? match.dataset.gameId : '';
+
+    if (categoryTimer) clearTimeout(categoryTimer);
+    if (typed.length < 2) return;
+    // Debounced: this is a Twitch API call per keystroke otherwise.
+    categoryTimer = setTimeout(async () => {
+        const results = await window.lbcbot.searchTwitchCategories(typed);
+        options.textContent = '';
+        (results || []).forEach((game) => {
+            const option = document.createElement('option');
+            option.value = game.name;
+            option.dataset.gameId = game.id;
+            options.appendChild(option);
+        });
+        // Re-check after results land: the user may have typed the full name before the search returned.
+        const now = input.value.trim().toLowerCase();
+        const fresh = Array.from(options.options).find((o) => o.value.toLowerCase() === now);
+        if (fresh) input.dataset.gameId = fresh.dataset.gameId;
+    }, 300);
+}
+
+function wireTemplates() {
+    const ytCategory = el('yt-category');
+    YT_CATEGORIES.forEach(([id, label]) => {
+        const option = document.createElement('option');
+        option.value = id;
+        option.textContent = label;
+        ytCategory.appendChild(option);
+    });
+
+    el('tw-category').addEventListener('input', onCategoryInput);
+
+    el('template-new').addEventListener('click', () => {
+        selectedTemplateId = null;
+        fillTemplateForm(null);
+        renderTemplateList();
+        el('template-name').focus();
+    });
+
+    el('template-save').addEventListener('click', async () => {
+        setTemplateStatus('Saving…');
+        const result = await window.lbcbot.saveStreamTemplate(selectedTemplateId, readTemplateForm());
+        if (!result || !result.ok) {
+            setTemplateStatus('Could not save — see Activity.');
+            return;
+        }
+        await refreshTemplates(result.data.streamTemplateId);
+        setTemplateStatus('Saved.');
+    });
+
+    el('template-delete').addEventListener('click', async () => {
+        if (!selectedTemplateId) return;
+        const result = await window.lbcbot.deleteStreamTemplate(selectedTemplateId);
+        if (!result || !result.ok) {
+            setTemplateStatus('Could not delete — see Activity.');
+            return;
+        }
+        selectedTemplateId = null;
+        fillTemplateForm(null);
+        await refreshTemplates(null);
+    });
+
+    el('template-apply').addEventListener('click', async () => {
+        if (!selectedTemplateId) return;
+        const button = el('template-apply');
+        button.disabled = true;
+        setTemplateStatus('Applying…');
+        const result = await window.lbcbot.applyStreamTemplate(selectedTemplateId);
+        button.disabled = false;
+        if (!result || !result.ok) {
+            setTemplateStatus('Could not apply — see Activity.');
+            return;
+        }
+        /*
+         * Report both halves, not an overall verdict. They succeed and fail independently — "Twitch updated,
+         * YouTube skipped because you are not live" is the useful answer, and a single line saying "failed"
+         * would be wrong about the half that worked.
+         */
+        const parts = ['twitch', 'youtube']
+            .map((p) => result.data[p])
+            .filter((o) => o && o.attempted)
+            .map((o) => o.message);
+        setTemplateStatus(parts.length ? parts.join(' ') : 'Nothing in this template to apply.');
+    });
+}
+
 function wire() {
     el('lbc-connect').addEventListener('click', async () => {
         el('device-code').textContent = 'Opening your browser…';
         await window.lbcbot.connectLbcbot();
         await refreshOverlays();
         await refreshDashboards();
+        await refreshPlatforms();
+        await refreshTemplates();
     });
+
+    el('refresh-platforms').addEventListener('click', refreshPlatforms);
+    el('open-integrations').addEventListener('click', () => window.lbcbot.openIntegrations());
     el('lbc-disconnect').addEventListener('click', () => window.lbcbot.disconnectLbcbot());
 
     el('obs-connect').addEventListener('click', async () => {
@@ -218,8 +476,12 @@ function wire() {
 (async function init() {
     wireNav();
     wire();
+    wireTemplates();
     const { logLines } = await window.lbcbot.getState();
     (logLines || []).forEach(appendLog);
+    fillTemplateForm(null);
     await refreshOverlays();
     await refreshDashboards();
+    await refreshPlatforms();
+    await refreshTemplates();
 })();

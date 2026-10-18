@@ -237,6 +237,43 @@ class LbcBot {
         return this.request('POST', '/users/credentials/overlay-key', { overlayId, name });
     }
 
+    /**
+     * Which streaming platforms this account has linked.
+     *
+     * Connections live on the ACCOUNT, not on this machine — the desktop app reads the state and sends people to
+     * the website to change it, because the OAuth redirect_uri is registered to the site and the callback needs
+     * the site's session to complete the link.
+     */
+    getPlatforms() {
+        return this.request('GET', '/users/platforms');
+    }
+
+    // ------------------------------------------------------------------ stream templates
+
+    /** Saved Twitch + YouTube metadata sets. Stored server-side, so they follow the account to any surface. */
+    getStreamTemplates() {
+        return this.request('GET', '/users/stream-template');
+    }
+
+    /** Create when `id` is null, update otherwise — the server takes the id from the path, never the body. */
+    saveStreamTemplate(id, template) {
+        return this.request('POST', id ? `/users/stream-template/${id}` : '/users/stream-template', template);
+    }
+
+    deleteStreamTemplate(id) {
+        return this.request('DELETE', `/users/stream-template/${id}`);
+    }
+
+    /** Push a template to both platforms. Answers per-platform outcomes, not a single boolean. */
+    applyStreamTemplate(id) {
+        return this.request('POST', `/users/stream-template/${id}/apply`);
+    }
+
+    /** Fuzzy Twitch category search, so a template stores the game_id rather than a name to resolve later. */
+    searchTwitchCategories(query) {
+        return this.request('GET', `/users/twitch/categories?q=${encodeURIComponent(query)}`);
+    }
+
     postObsEvent(payload) {
         return this.request('POST', '/users/obs/event', payload);
     }

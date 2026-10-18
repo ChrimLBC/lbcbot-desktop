@@ -29,6 +29,17 @@ contextBridge.exposeInMainWorld('lbcbot', {
     getDashboards: () => ipcRenderer.invoke('get-dashboards'),
     openDashboard: (dashboardId) => ipcRenderer.invoke('open-dashboard', dashboardId),
 
+    // Linked streaming platforms. Read-only here — changing them happens on the website.
+    getPlatforms: () => ipcRenderer.invoke('get-platforms'),
+    openIntegrations: () => ipcRenderer.invoke('open-integrations'),
+
+    // Stream templates. The renderer edits plain objects; the main process owns the credential and the calls.
+    getStreamTemplates: () => ipcRenderer.invoke('get-stream-templates'),
+    saveStreamTemplate: (id, template) => ipcRenderer.invoke('save-stream-template', { id, template }),
+    deleteStreamTemplate: (id) => ipcRenderer.invoke('delete-stream-template', id),
+    applyStreamTemplate: (id) => ipcRenderer.invoke('apply-stream-template', id),
+    searchTwitchCategories: (query) => ipcRenderer.invoke('search-twitch-categories', query),
+
     // Push channels. Each returns an unsubscribe so a re-render cannot stack duplicate listeners.
     onState: (handler) => {
         const listener = (_event, payload) => handler(payload);
