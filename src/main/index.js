@@ -71,32 +71,64 @@ function createWindow() {
 const DASHBOARD_PARTITION = 'persist:lbcbot-dashboard';
 
 /**
- * A standard Chrome user agent with our own token appended.
+ * Our user agent: Electron's own default, with the Electron token removed and ours appended.
  *
- * Two jobs in one string. Electron's default UA advertises "Electron", which some sign-in flows challenge —
- * Twitch's included — so the bulk of this has to look like ordinary Chrome. The trailing token is how the
- * WEB APP detects it is running inside the desktop app, which is what lets a widget render a live `<webview>`
- * embed here and a plain "open in a tab" button in a browser. Sniffing for "Electron" would have worked until
- * the moment we hid it, so the two needs are deliberately solved by the same line.
+ * <h3>Why this is DERIVED and never written out by hand</h3>
+ *
+ * It used to be a literal string claiming `Chrome/128.0.0.0`. Electron 43 ships Chromium **150**, so the app was
+ * announcing a browser more than two years out of date, and Twitch's sign-in answered "Your browser is not
+ * currently supported" — correctly, by its own rules. A hardcoded version is wrong the moment Electron is
+ * upgraded and silently rots from there; taking Electron's default means the Chrome version is always the one
+ * actually rendering the page, and the platform token is always the real platform rather than a Mac string
+ * shipped to Windows users.
+ *
+ * <h3>The client-hint half, which a UA string cannot fix</h3>
+ *
+ * `setUserAgent` does not touch `navigator.userAgentData` or the `Sec-CH-UA` headers — those keep reporting the
+ * real Chromium build. Hardcoding therefore also produced a contradiction (UA said 128, client hints said 150),
+ * which is exactly the inconsistency browser-integrity checks look for. Deriving from the default makes the two
+ * agree by construction, so there is nothing left to spoof. Electron's client-hint brands are "Chromium" and
+ * "Not;A=Brand" — no Electron brand leaks — so with the versions in step this reads as ordinary Chrome.
+ *
+ * <h3>Why the trailing token stays</h3>
+ *
+ * `LBCBotDesktop/1.0` is how the WEB APP detects it is running inside the desktop app, which is what lets a
+ * widget render a live `<webview>` embed here and a plain "open in a tab" button in a browser. Sniffing for
+ * "Electron" would have worked until the moment that token was removed, so the two needs are solved together.
  */
-const DASHBOARD_USER_AGENT =
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) '
-    + 'Chrome/128.0.0.0 Safari/537.36 LBCBotDesktop/1.0';
+function buildUserAgent() {
+    const base = app.userAgentFallback || '';
+    const chromeLike = base
+        // "Electron/43.8.0" — the part sign-in flows challenge.
+        .replace(/\sElectron\/[\d.]+/i, '')
+        // A product token Electron inserts before Chrome when the app has a name ("LBCBot/1.0.3 Chrome/150…").
+        // Scoped by the lookahead so it can only ever remove the token directly in front of Chrome.
+        .replace(/\s[^\s/]+\/[\d.]+(?=\sChrome\/)/, '')
+        .replace(/\s{2,}/g, ' ')
+        .trim();
+    return `${chromeLike} LBCBotDesktop/1.0`;
+}
+
+/** Resolved once at startup, after `app` is ready enough to know its own default. */
+let DASHBOARD_USER_AGENT = '';
 
 /**
- * Pin the user agent on the SESSION, not on each navigation.
+ * Pin the user agent app-wide, not on each navigation.
  *
  * `loadURL(url, { userAgent })` applies to that one navigation and nothing after it. A sign-in is a chain of
  * navigations — the authorize page, the form POST, the redirect back — and every step after the first went out
- * with Electron's default UA, which is what made Twitch answer "this browser is not supported" on a window we
- * had carefully given a Chrome UA. Setting it on the session covers the dashboard window, the Twitch window, the
- * backstage `<webview>` and any popup sharing the partition, for every request they make.
+ * with Electron's default UA, Electron token and all. Setting `userAgentFallback` covers every session and every
+ * window, including ones added later that nobody remembers to wire up; the partition is set explicitly too, since
+ * that is the session the dashboards and the Twitch window actually use.
  *
- * Call before creating any window on this partition: Electron's own note is that this does not affect WebContents
- * that already exist.
+ * Call before creating any window: Electron's own note is that a session UA does not affect WebContents that
+ * already exist.
  */
 function applySessionUserAgent() {
+    DASHBOARD_USER_AGENT = buildUserAgent();
+    app.userAgentFallback = DASHBOARD_USER_AGENT;
     session.fromPartition(DASHBOARD_PARTITION).setUserAgent(DASHBOARD_USER_AGENT);
+    log(`Browser identity: ${DASHBOARD_USER_AGENT}`);
 }
 
 /** Open dashboard windows, keyed by dashboardId (the string '' stands for the no-id picker window). */
@@ -176,7 +208,11 @@ const windowOpenPolicy = ({ url: target }) => {
  * was already being constructed when it was applied.
  */
 function adoptChildWindow(contents) {
-    contents.setUserAgent(DASHBOARD_USER_AGENT);
+    // Guarded because an empty string would REPLACE the inherited fallback with nothing, which is worse than
+    // doing nothing at all. It is only empty before applySessionUserAgent has run, which no window outlives.
+    if (DASHBOARD_USER_AGENT) {
+        contents.setUserAgent(DASHBOARD_USER_AGENT);
+    }
     contents.setWindowOpenHandler(windowOpenPolicy);
 }
 
