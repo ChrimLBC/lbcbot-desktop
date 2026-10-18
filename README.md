@@ -62,6 +62,32 @@ npm start          # launches the app (needs a display)
 npm run dist       # build installers for the current platform
 ```
 
+Two environment traps, both of which look like the app is broken when it is not:
+
+- **Do not launch from a VS Code integrated terminal.** VS Code exports `ELECTRON_RUN_AS_NODE=1`, which makes
+  Electron start as plain Node — `require('electron')` then returns a path string instead of the API and the app
+  dies on `Cannot read properties of undefined (reading 'whenReady')`. Use a normal terminal, or
+  `env -u ELECTRON_RUN_AS_NODE npm start`.
+- **Electron is pinned to 43 for macOS 12.** Chromium dropped Monterey, so Electron 44+ needs macOS 13 Ventura
+  and aborts on 12 with `Symbol not found: _objc_claimAutoreleasedReturnValue`. 43 is the last line that runs
+  there; apps built on it still run on newer macOS, so pinning costs no users. Only raise this once the dev
+  machine is on Ventura or later.
+
+## Dashboards in their own windows
+
+The **Dashboards** section of the app window lists your dashboards and opens any of them in its own frameless
+window. They share one signed-in session, remember their size and position per dashboard, and reopen on the
+next launch if they were still open when you quit.
+
+This is also the only place the **Twitch Backstage** widget can do its real job. Twitch serves
+`X-Frame-Options: SAMEORIGIN`, so no web page can ever iframe it; here it renders in a `<webview>`, which is a
+separate browsing context the header does not apply to. That matters for the two things Twitch exposes **no
+API** for:
+
+- **Start Sharing Chat** (Shared Chat has one read-only Helix endpoint and no way to start a session).
+- **Raid Now** — `POST /helix/raids` starts the 90-second countdown and there is no parameter or endpoint to
+  skip it. Pressing Raid Now in the embedded backstage is the only way to raid immediately.
+
 ## Known gaps
 
 - **Never run against real OBS.** Module loading, the action vocabulary (every type verified against a stubbed
@@ -71,5 +97,7 @@ npm run dist       # build installers for the current platform
 - **No audio deck yet.** Browser-based song playback still lives in the website's `/song-queue` tab
   (`BrowserPlayer.js`), and TTS still plays inside the overlay browser source. Owning audio properly is the obvious
   next feature and the main reason to want this app running anyway.
-- **No global hotkeys**, and the website's control pages are not embedded.
+- **No global hotkeys.**
+- **No installer distribution yet.** `npm run dist` builds locally, but nothing is signed, notarized or
+  published, so there is no download link on the website. macOS will gatekeeper an unsigned `.dmg`.
 - `siteUrl` must match where the frontend is served, or the browser sources it creates will point at the wrong host.
