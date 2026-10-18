@@ -1,0 +1,31 @@
+{
+  "name": "lbcbot-desktop",
+  "version": "1.0.0",
+  "description": "LBCBot desktop app — bridges OBS to LBCBot in both directions and sets up overlay browser sources.",
+  "private": true,
+  "main": "src/main/index.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder",
+    "dist:mac": "electron-builder --mac",
+    "dist:win": "electron-builder --win"
+  },
+  "license": "UNLICENSED",
+  "dependencies": {
+    "@stomp/stompjs": "^7.3.0",
+    "obs-websocket-js": "^5.0.8",
+    "sockjs-client": "^1.6.1"
+  },
+  "devDependencies": {
+    "electron": "^44.5.1",
+    "electron-builder": "^26.15.3"
+  },
+  "build": {
+    "appId": "com.lbcbot.desktop",
+    "productName": "LBCBot",
+    "files": ["src/**/*", "package.json"],
+    "mac": { "category": "public.app-category.video", "target": ["dmg"] },
+    "win": { "target": ["nsis"] },
+    "linux": { "target": ["AppImage"] }
+  }
+}
