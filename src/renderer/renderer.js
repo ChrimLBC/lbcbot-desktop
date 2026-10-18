@@ -16,6 +16,43 @@ function setPill(node, on, onText, offText) {
     node.className = `pill ${on ? 'pill--on' : 'pill--off'}`;
 }
 
+/**
+ * Connection state, shown as a dot beside its pill in the sidebar.
+ *
+ * The pills live in the rail rather than in the Status pane so that connection state is readable from every
+ * pane — the one piece of state that matters no matter what you are doing.
+ */
+function setStatus(name, on) {
+    // "Offline" rather than "Not connected": the rail is 200px and the longer label wrapped the pill onto two
+    // lines. The dot carries the same meaning anyway, so the word only has to confirm it.
+    setPill(el(`${name}-status`), on, 'Connected', 'Offline');
+    el(`${name}-dot`).className = `dot ${on ? 'dot--on' : 'dot--off'}`;
+}
+
+/**
+ * Sidebar navigation.
+ *
+ * Wired generically off `data-pane` so adding a section is one nav button and one `.pane` — nothing here needs
+ * to learn its name. Deliberately not persisted: a launch should always open on Status, because that is where
+ * you act when something failed to connect.
+ */
+function showPane(name) {
+    const pane = el(`pane-${name}`);
+    if (!pane) return;
+    document.querySelectorAll('.pane').forEach((node) => {
+        node.classList.toggle('is-active', node === pane);
+    });
+    document.querySelectorAll('.nav__item').forEach((node) => {
+        node.classList.toggle('is-active', node.dataset.pane === name);
+    });
+}
+
+function wireNav() {
+    document.querySelectorAll('.nav__item').forEach((node) => {
+        node.addEventListener('click', () => showPane(node.dataset.pane));
+    });
+}
+
 function applyState(state) {
     if (!state) return;
     if (state.settings) {
@@ -29,8 +66,8 @@ function applyState(state) {
         el('forward-events').checked = state.settings.forwardObsEvents !== false;
         el('auto-connect').checked = state.settings.autoConnectObs !== false;
     }
-    setPill(el('lbc-status'), state.lbcbotConnected, 'Connected', 'Not connected');
-    setPill(el('obs-status'), state.obsConnected, 'Connected', 'Not connected');
+    setStatus('lbc', state.lbcbotConnected);
+    setStatus('obs', state.obsConnected);
     if (state.lbcbotConnected) el('device-code').textContent = '';
 }
 
@@ -171,9 +208,7 @@ function wire() {
 
     window.lbcbot.onState(applyState);
     window.lbcbot.onLog(appendLog);
-    window.lbcbot.onObsStatus((status) => {
-        setPill(el('obs-status'), status.connected, 'Connected', 'Not connected');
-    });
+    window.lbcbot.onObsStatus((status) => setStatus('obs', status.connected));
     window.lbcbot.onDeviceCode((grant) => {
         el('device-code').textContent =
             `Approve code ${grant.userCode} — your browser should have opened at ${grant.verificationUri}`;
@@ -181,6 +216,7 @@ function wire() {
 }
 
 (async function init() {
+    wireNav();
     wire();
     const { logLines } = await window.lbcbot.getState();
     (logLines || []).forEach(appendLog);

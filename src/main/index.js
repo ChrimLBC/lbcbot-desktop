@@ -40,8 +40,12 @@ function send(channel, payload) {
 
 function createWindow() {
     mainWindow = new BrowserWindow({
-        width: 900,
-        height: 680,
+        width: 960,
+        height: 700,
+        // The sidebar is a fixed 200px, so below this the content column gets uncomfortably narrow and the
+        // two-column rows (label + input + button) start wrapping.
+        minWidth: 720,
+        minHeight: 520,
         title: 'LBCBot',
         backgroundColor: '#15161a',
         webPreferences: {

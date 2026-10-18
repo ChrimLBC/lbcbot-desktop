@@ -3,111 +3,201 @@
 <head>
     <meta charset="utf-8" />
     <!-- No remote anything: the renderer is local files only, so a strict CSP costs nothing and closes off
-         script injection through a log line or an overlay name. -->
+         script injection through a log line or an overlay name. Note style-src 'self' forbids inline styles,
+         so everything visual lives in renderer.css. -->
     <meta http-equiv="Content-Security-Policy"
           content="default-src 'none'; style-src 'self'; script-src 'self'; img-src 'self' data:;" />
     <title>LBCBot</title>
     <link rel="stylesheet" href="renderer.css" />
 </head>
 <body>
-    <header>
-        <h1>LBCBot</h1>
-        <p class="sub">Bridges OBS and LBCBot. Leave this running while you stream.</p>
-    </header>
+<!--
+    Sidebar + panes rather than one scrolling column.
 
-    <section class="card">
-        <div class="card__head">
-            <h2>LBCBot</h2>
-            <span id="lbc-status" class="pill pill--off">Not connected</span>
-        </div>
-        <div class="row">
-            <label for="api-url">API URL</label>
-            <input id="api-url" type="text" spellcheck="false" />
-        </div>
-        <div class="row">
-            <label for="site-url">Website URL</label>
-            <input id="site-url" type="text" spellcheck="false" />
-        </div>
-        <div class="row row--actions">
-            <button id="lbc-connect" class="primary">Connect</button>
-            <button id="lbc-disconnect">Forget credential</button>
-        </div>
-        <p id="device-code" class="hint"></p>
-    </section>
+    The five sections are used at completely different moments: connections and settings are set once, overlays
+    occasionally, dashboards every stream, and the log only when something looks wrong. Stacking them meant the
+    thing you reach for daily sat below a wall of configuration you had already finished with.
 
-    <section class="card">
-        <div class="card__head">
-            <h2>OBS</h2>
-            <span id="obs-status" class="pill pill--off">Not connected</span>
+    Connection state is the exception — it matters wherever you are — so it is pinned to the sidebar footer and
+    visible from every pane.
+-->
+<div class="app">
+    <aside class="nav">
+        <div class="nav__brand">
+            <h1>LBCBot</h1>
+            <p class="nav__sub">Leave running while you stream</p>
         </div>
-        <div class="row">
-            <label for="obs-url">WebSocket URL</label>
-            <input id="obs-url" type="text" spellcheck="false" placeholder="ws://127.0.0.1:4455" />
-        </div>
-        <div class="row">
-            <label for="obs-password">Password</label>
-            <input id="obs-password" type="password" placeholder="from OBS → Tools → WebSocket Server Settings" />
-        </div>
-        <div class="row">
-            <label for="forward-events">Send OBS events to LBCBot</label>
-            <input id="forward-events" type="checkbox" />
-        </div>
-        <div class="row">
-            <label for="auto-connect">Connect to OBS on launch</label>
-            <input id="auto-connect" type="checkbox" />
-        </div>
-        <div class="row row--actions">
-            <button id="obs-connect" class="primary">Connect</button>
-            <button id="obs-disconnect">Disconnect</button>
-        </div>
-        <p class="hint">
-            OBS 28 and later already include the WebSocket server — enable it under Tools → WebSocket Server
-            Settings. Nothing needs installing into OBS itself.
-        </p>
-    </section>
 
-    <section class="card">
-        <div class="card__head">
-            <h2>Add an overlay to OBS</h2>
-            <button id="refresh-overlays">Refresh</button>
-        </div>
-        <div class="row">
-            <label for="scene-select">Scene</label>
-            <select id="scene-select"></select>
-        </div>
-        <ul id="overlay-list" class="list"></ul>
-        <p class="hint">
-            Creates a correctly sized browser source with a scoped overlay key. The URL is never shown or copied, so
-            it cannot end up in a screenshot — and you can revoke it any time under Connected apps on the website.
-        </p>
-    </section>
+        <!-- data-pane maps to a .pane id below; the renderer wires these generically. -->
+        <nav class="nav__items">
+            <button type="button" class="nav__item is-active" data-pane="status">Status</button>
+            <button type="button" class="nav__item" data-pane="dashboards">Dashboards</button>
+            <button type="button" class="nav__item" data-pane="overlays">Overlays</button>
+            <button type="button" class="nav__item" data-pane="settings">Settings</button>
+            <button type="button" class="nav__item" data-pane="activity">Activity</button>
+        </nav>
 
-    <section class="card">
-        <div class="card__head">
-            <h2>Dashboard</h2>
-            <button id="refresh-dashboards">Refresh</button>
+        <div class="nav__status">
+            <div class="statusline">
+                <span id="lbc-dot" class="dot dot--off"></span>
+                <span class="statusline__label">LBCBot</span>
+                <span id="lbc-status" class="pill pill--off">Not connected</span>
+            </div>
+            <div class="statusline">
+                <span id="obs-dot" class="dot dot--off"></span>
+                <span class="statusline__label">OBS</span>
+                <span id="obs-status" class="pill pill--off">Not connected</span>
+            </div>
         </div>
-        <div class="row">
-            <label for="dashboard-select">Open</label>
-            <select id="dashboard-select"></select>
-            <button id="open-dashboard" class="primary">Open window</button>
-        </div>
-        <p class="hint">
-            Opens a control dashboard in its own window, so you don't need a browser for it. Open as many as you
-            like — each remembers its size and position, and whichever are open when you quit come back on the next
-            launch. Signs in once and remembers you.
-        </p>
-        <p class="hint">
-            Media playback still belongs in your normal browser: YouTube embeds serve ads in any plain Chromium,
-            this one included. The dashboard's Media Queue widget drives playback rather than hosting it.
-        </p>
-    </section>
+    </aside>
 
-    <section class="card">
-        <div class="card__head"><h2>Activity</h2></div>
-        <pre id="log" class="log"></pre>
-    </section>
+    <main class="main">
+        <!-- ---------------------------------------------------------------- Status -->
+        <section class="pane is-active" id="pane-status">
+            <header class="pane__head">
+                <h2>Status</h2>
+                <p class="pane__sub">Connect this machine to your account and to OBS.</p>
+            </header>
 
-    <script src="renderer.js"></script>
+            <section class="card">
+                <div class="card__head"><h3>LBCBot</h3></div>
+                <p class="hint">
+                    Links this machine to your account using a one-time code. The credential is stored encrypted in
+                    your OS keychain — forgetting it here does not revoke it, do that under Connected apps on the
+                    website.
+                </p>
+                <div class="row row--actions">
+                    <button id="lbc-connect" class="primary">Connect</button>
+                    <button id="lbc-disconnect">Forget credential</button>
+                </div>
+                <p id="device-code" class="hint"></p>
+            </section>
+
+            <section class="card">
+                <div class="card__head"><h3>OBS</h3></div>
+                <p class="hint">
+                    OBS 28 and later already include the WebSocket server — enable it under Tools → WebSocket
+                    Server Settings. Nothing needs installing into OBS itself.
+                </p>
+                <div class="row">
+                    <label for="obs-password">Password</label>
+                    <input id="obs-password" type="password" placeholder="from OBS → Tools → WebSocket Server Settings" />
+                </div>
+                <div class="row row--actions">
+                    <button id="obs-connect" class="primary">Connect</button>
+                    <button id="obs-disconnect">Disconnect</button>
+                </div>
+            </section>
+        </section>
+
+        <!-- ------------------------------------------------------------ Dashboards -->
+        <section class="pane" id="pane-dashboards">
+            <header class="pane__head">
+                <h2>Dashboards</h2>
+                <p class="pane__sub">Your control dashboards, each in its own window.</p>
+            </header>
+
+            <section class="card">
+                <div class="card__head">
+                    <h3>Open a dashboard</h3>
+                    <button id="refresh-dashboards">Refresh</button>
+                </div>
+                <div class="row">
+                    <label for="dashboard-select">Dashboard</label>
+                    <select id="dashboard-select"></select>
+                    <button id="open-dashboard" class="primary">Open window</button>
+                </div>
+                <p class="hint">
+                    Open as many as you like — each remembers its size and position, and whichever are open when you
+                    quit come back on the next launch. You sign in once and it remembers you.
+                </p>
+                <p class="hint">
+                    This is also the only place the Twitch Backstage widget works properly: Twitch refuses to be
+                    embedded in a web page, so Raid Now and Start Sharing Chat — neither of which Twitch exposes an
+                    API for — are reachable here and nowhere else.
+                </p>
+                <p class="hint">
+                    Media playback still belongs in your normal browser: YouTube embeds serve ads in any plain
+                    Chromium, this one included. The Media Queue widget drives playback rather than hosting it.
+                </p>
+            </section>
+        </section>
+
+        <!-- -------------------------------------------------------------- Overlays -->
+        <section class="pane" id="pane-overlays">
+            <header class="pane__head">
+                <h2>Overlays</h2>
+                <p class="pane__sub">Add an overlay to OBS as a correctly sized browser source.</p>
+            </header>
+
+            <section class="card">
+                <div class="card__head">
+                    <h3>Add to OBS</h3>
+                    <button id="refresh-overlays">Refresh</button>
+                </div>
+                <div class="row">
+                    <label for="scene-select">Scene</label>
+                    <select id="scene-select"></select>
+                </div>
+                <ul id="overlay-list" class="list"></ul>
+                <p class="hint">
+                    The browser source is created with a scoped overlay key. The URL is never shown or copied, so it
+                    cannot end up in a screenshot — and you can revoke it any time under Connected apps.
+                </p>
+            </section>
+        </section>
+
+        <!-- -------------------------------------------------------------- Settings -->
+        <section class="pane" id="pane-settings">
+            <header class="pane__head">
+                <h2>Settings</h2>
+                <p class="pane__sub">Where this app points, and what it does on launch.</p>
+            </header>
+
+            <section class="card">
+                <div class="card__head"><h3>Addresses</h3></div>
+                <div class="row">
+                    <label for="api-url">API URL</label>
+                    <input id="api-url" type="text" spellcheck="false" />
+                </div>
+                <div class="row">
+                    <label for="site-url">Website URL</label>
+                    <input id="site-url" type="text" spellcheck="false" />
+                </div>
+                <div class="row">
+                    <label for="obs-url">OBS WebSocket URL</label>
+                    <input id="obs-url" type="text" spellcheck="false" placeholder="ws://127.0.0.1:4455" />
+                </div>
+                <p class="hint">
+                    The website URL has to match where the frontend is actually served, or the browser sources this
+                    app creates will point at the wrong host.
+                </p>
+            </section>
+
+            <section class="card">
+                <div class="card__head"><h3>On launch</h3></div>
+                <div class="row">
+                    <label for="forward-events">Send OBS events to LBCBot</label>
+                    <input id="forward-events" type="checkbox" />
+                </div>
+                <div class="row">
+                    <label for="auto-connect">Connect to OBS on launch</label>
+                    <input id="auto-connect" type="checkbox" />
+                </div>
+            </section>
+        </section>
+
+        <!-- -------------------------------------------------------------- Activity -->
+        <section class="pane" id="pane-activity">
+            <header class="pane__head">
+                <h2>Activity</h2>
+                <p class="pane__sub">What the bridge has been doing. Check here first when something looks wrong.</p>
+            </header>
+            <pre id="log" class="log"></pre>
+        </section>
+    </main>
+</div>
+
+<script src="renderer.js"></script>
 </body>
 </html>

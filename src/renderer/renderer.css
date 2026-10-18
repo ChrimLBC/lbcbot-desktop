@@ -12,17 +12,100 @@
 * { box-sizing: border-box; }
 
 body {
+    /* The shell owns the scrolling now — only the active pane scrolls, so switching panes never leaves you
+       halfway down something else. */
     margin: 0;
-    padding: 20px 22px 32px;
+    height: 100vh;
+    overflow: hidden;
     background: var(--bg);
     color: var(--ink);
     font: 14px/1.5 -apple-system, "Segoe UI", system-ui, sans-serif;
 }
 
-header { margin-bottom: 18px; }
-h1 { margin: 0; font-size: 20px; letter-spacing: -0.01em; }
-h2 { margin: 0; font-size: 14px; font-weight: 600; }
+h1 { margin: 0; font-size: 18px; letter-spacing: -0.01em; }
+h2 { margin: 0; font-size: 17px; font-weight: 600; letter-spacing: -0.01em; }
+h3 { margin: 0; font-size: 14px; font-weight: 600; }
 .sub { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
+
+/* ---- Shell -------------------------------------------------------------- */
+.app {
+    display: grid;
+    /* Fixed rail, fluid content. The rail is sized to the longest nav label so switching panes never reflows it. */
+    grid-template-columns: 200px 1fr;
+    height: 100vh;
+}
+
+.nav {
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+    padding: 18px 12px 14px;
+    border-right: 1px solid var(--line);
+    background: #121318;
+}
+
+.nav__brand { padding: 0 8px; }
+.nav__sub { margin: 3px 0 0; color: var(--muted); font-size: 11.5px; line-height: 1.35; }
+
+.nav__items { display: flex; flex-direction: column; gap: 2px; }
+
+.nav__item {
+    /* Reset the button chrome inherited from the generic `button` rule below. */
+    padding: 8px 10px;
+    border: none;
+    border-radius: 7px;
+    background: none;
+    color: var(--muted);
+    font-size: 13.5px;
+    font-weight: 500;
+    text-align: left;
+    cursor: pointer;
+}
+
+.nav__item:hover:not(.is-active) { background: rgba(255, 255, 255, 0.05); color: var(--ink); }
+
+.nav__item.is-active {
+    background: rgba(90, 44, 160, 0.35);
+    color: #fff;
+    font-weight: 600;
+}
+
+/* Pinned to the bottom of the rail: connection state is the one thing that matters from every pane. */
+.nav__status {
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+    margin-top: auto;
+    padding: 11px 9px 3px;
+    border-top: 1px solid var(--line);
+}
+
+.statusline { display: flex; align-items: center; gap: 7px; font-size: 11.5px; }
+.statusline__label { flex: 1 1 auto; color: var(--muted); }
+/* The pill is uppercase with letter-spacing, so it is wider than it looks — never let it wrap in the rail. */
+.statusline .pill { white-space: nowrap; flex: 0 0 auto; }
+
+.dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; }
+.dot--on { background: var(--on); box-shadow: 0 0 0 3px rgba(91, 201, 139, 0.16); }
+.dot--off { background: var(--off); }
+
+/* ---- Panes -------------------------------------------------------------- */
+.main { min-width: 0; overflow: hidden; }
+
+.pane {
+    display: none;
+    height: 100vh;
+    overflow-y: auto;
+    padding: 22px 24px 32px;
+}
+
+.pane.is-active { display: block; }
+
+.pane__head { margin-bottom: 16px; }
+.pane__sub { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
+
+/* The log is the whole point of its pane, so let it use the height instead of capping at 190px there. */
+#pane-activity .log { max-height: calc(100vh - 150px); }
 
 .card {
     margin-bottom: 14px;
@@ -69,6 +152,17 @@ h2 { margin: 0; font-size: 14px; font-weight: 600; }
     width: 16px;
     height: 16px;
     accent-color: var(--brand);
+}
+
+/*
+ * Toggle rows read differently from field rows: the label is the whole sentence, not a column heading.
+ *
+ * Pinning it to the 180px column above wrapped "Send OBS events to LBCBot" onto two lines and stranded the
+ * checkbox in the middle of the row with empty space after it. Letting the label grow puts the control at the
+ * right edge, which is also where a settings toggle is looked for.
+ */
+.row:has(> input[type="checkbox"]) label {
+    flex: 1 1 auto;
 }
 
 .row--actions { margin-top: 12px; }
