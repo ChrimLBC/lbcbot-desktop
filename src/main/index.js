@@ -292,6 +292,9 @@ function openDashboardWindow(dashboardId) {
             contextIsolation: true,
             nodeIntegration: false,
             webviewTag: true,
+            // Seeds this machine's credential into localStorage so the page signs itself in instead of showing a
+            // web login nobody can complete in an embedded window. Exposes NO api surface — see the file.
+            preload: path.join(__dirname, '..', 'preload', 'dashboard.js'),
         },
     });
     if (saved && saved.maximized) {
@@ -350,6 +353,21 @@ function openDashboardWindow(dashboardId) {
 
     log(`Opened dashboard window at ${url}`);
     return { ok: true };
+}
+
+/**
+ * Reload every open dashboard so each re-runs its preload and picks up the current credential.
+ *
+ * Called when the credential CHANGES — connect and disconnect — because a dashboard decides whether it has a
+ * session once, during page startup. Without this, connecting leaves every already-open window stranded on the
+ * signed-out page until it is closed and reopened, which looks like connecting did not work.
+ */
+function reloadDashboards() {
+    dashboardWindows.forEach((win) => {
+        if (!win.isDestroyed()) {
+            win.webContents.reload();
+        }
+    });
 }
 
 /** Twitch's own UI (the Stream Together backstage), in-app on the dashboard's logged-in partition. */
@@ -433,6 +451,23 @@ async function pushState() {
 }
 
 function registerIpc() {
+    /*
+     * The dashboard preload asking for this machine's credential.
+     *
+     * Synchronous because the preload has to answer before the page's own scripts run — the page reads the
+     * credential during startup, and an async hand-off would race that and work only sometimes.
+     *
+     * The sender is checked against our own dashboard windows even though the remote page cannot reach
+     * `ipcRenderer` (contextIsolation is on and the preload exposes nothing): this channel hands out a full-scope
+     * credential, so it should be unreachable by construction rather than by relying on one setting staying put.
+     */
+    ipcMain.on('dashboard-credential', (event) => {
+        const fromDashboard = [...dashboardWindows.values()].some(
+            (win) => !win.isDestroyed() && win.webContents.id === event.sender.id,
+        );
+        event.returnValue = fromDashboard ? store.getCredential() : null;
+    });
+
     ipcMain.handle('get-state', async () => {
         await pushState();
         // The update status is returned rather than only pushed: a check can finish before the renderer has
@@ -470,6 +505,10 @@ function registerIpc() {
             if (ok) {
                 log('Connected to LBCBot.');
                 await startDeviceControl();
+                // Any dashboard already open is sitting on the signed-out page, because it was opened before
+                // there was a credential to seed. The preload runs again on reload, so this is what turns
+                // "connect" into "my dashboards are signed in" without the user closing and reopening them.
+                reloadDashboards();
             } else {
                 log('LBCBot connection was not approved before the code expired.');
             }
@@ -484,6 +523,9 @@ function registerIpc() {
     ipcMain.handle('disconnect-lbcbot', async () => {
         lbcbot.disconnect();
         log('Forgot the LBCBot credential locally. It is NOT revoked — do that under Connected apps on the website.');
+        // Same reason as on connect, in the other direction: a dashboard left open would keep a session the
+        // machine no longer has a credential for, which is exactly what "disconnect" should not leave behind.
+        reloadDashboards();
         await pushState();
         return true;
     });
