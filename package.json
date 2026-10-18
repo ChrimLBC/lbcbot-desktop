@@ -42,7 +42,7 @@
       "target": [
         "nsis"
       ],
-      "artifactName": "LBCBot-Setup-${version}.${ext}"
+      "artifactName": "LBCBot-Setup.${ext}"
     },
     "nsis": {
       "oneClick": false,
