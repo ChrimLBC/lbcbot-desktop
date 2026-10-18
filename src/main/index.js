@@ -1,10 +1,11 @@
 'use strict';
 
-const { app, BrowserWindow, ipcMain, shell, screen } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, screen, session } = require('electron');
 const path = require('node:path');
 const store = require('./store');
 const { LbcBot } = require('./lbcbot');
 const { ObsBridge } = require('./obs');
+const { Updater } = require('./updater');
 
 /**
  * Main process: owns both connections and relays between them.
@@ -17,6 +18,7 @@ const { ObsBridge } = require('./obs');
 let mainWindow = null;
 let lbcbot = null;
 let obs = null;
+let updater = null;
 
 /** Bounded in-memory log; the renderer renders it and it is the only place a user sees what the bridge is doing. */
 const LOG_LIMIT = 300;
@@ -81,17 +83,80 @@ const DASHBOARD_USER_AGENT =
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) '
     + 'Chrome/128.0.0.0 Safari/537.36 LBCBotDesktop/1.0';
 
+/**
+ * Pin the user agent on the SESSION, not on each navigation.
+ *
+ * `loadURL(url, { userAgent })` applies to that one navigation and nothing after it. A sign-in is a chain of
+ * navigations — the authorize page, the form POST, the redirect back — and every step after the first went out
+ * with Electron's default UA, which is what made Twitch answer "this browser is not supported" on a window we
+ * had carefully given a Chrome UA. Setting it on the session covers the dashboard window, the Twitch window, the
+ * backstage `<webview>` and any popup sharing the partition, for every request they make.
+ *
+ * Call before creating any window on this partition: Electron's own note is that this does not affect WebContents
+ * that already exist.
+ */
+function applySessionUserAgent() {
+    session.fromPartition(DASHBOARD_PARTITION).setUserAgent(DASHBOARD_USER_AGENT);
+}
+
 /** Open dashboard windows, keyed by dashboardId (the string '' stands for the no-id picker window). */
 const dashboardWindows = new Map();
 
+/** The hosts an OAuth consent screen actually lives on, for the flows this app's dashboards can start. */
+const AUTH_HOSTS = /^(id\.twitch\.tv|accounts\.google\.com|accounts\.spotify\.com)$/i;
+
+const hostOf = (target) => {
+    try {
+        return new URL(target).host;
+    } catch {
+        return null;
+    }
+};
+
+/** The configured site's own host, so the OAuth callback leg is recognised as ours rather than as a stray link. */
+const siteHost = () => hostOf((store.settings().siteUrl || '').replace(/\/+$/, '') || 'about:blank');
+
 /**
- * Where a link is allowed to open: Twitch stays in-app on the logged-in partition, everything else leaves.
+ * Where a link is allowed to open.
  *
- * Twitch's backstage is the whole reason for being here — bouncing it to the system browser would mean a second
- * login and lose the point. A docs link is the opposite: it must not replace the control surface a streamer is
- * using mid-stream.
+ * Three outcomes, and the first one is the whole reason this is not a two-liner:
+ *
+ * <ol>
+ *   <li><b>A sign-in popup opens as a real popup.</b> The web app's OAuth flow opens a window, lets the provider
+ *       redirect it back to `/auth?code=…`, and the callback page relays the code to `window.opener` by
+ *       postMessage before closing itself. Denying the open and hand-rolling a BrowserWindow — which this did —
+ *       produces a window with <b>no opener</b>, so the code has nowhere to go: the user signs in successfully,
+ *       the popup sits on the landing page, and the dashboard behind it never learns anything happened. Allowing
+ *       the open keeps the opener intact and the flow works. The override only pins the partition, so the popup
+ *       shares the session it is signing in to.</li>
+ *   <li><b>Other Twitch links stay in-app.</b> Twitch's backstage is the reason for being here — bouncing it to
+ *       the system browser would mean a second login and lose the point.</li>
+ *   <li><b>Everything else leaves.</b> A docs link must not replace the control surface a streamer is using
+ *       mid-stream.</li>
+ * </ol>
  */
 const windowOpenPolicy = ({ url: target }) => {
+    const host = hostOf(target || '');
+    const ours = host && host === siteHost();
+    if (host && (AUTH_HOSTS.test(host) || ours)) {
+        return {
+            action: 'allow',
+            overrideBrowserWindowOptions: {
+                // A consent screen is a tall narrow popup; a page of ours is a page. Sizing a `target="_blank"`
+                // link to our own site like a sign-in box would open the rewards editor in a 520px column.
+                ...(ours
+                    ? { width: 1200, height: 860, title: 'LBCBot' }
+                    : { width: 520, height: 760, title: 'Sign in' }),
+                backgroundColor: '#0e0e10',
+                autoHideMenuBar: true,
+                webPreferences: {
+                    partition: DASHBOARD_PARTITION,
+                    contextIsolation: true,
+                    nodeIntegration: false,
+                },
+            },
+        };
+    }
     if (/^https:\/\/([a-z0-9-]+\.)*twitch\.tv\//i.test(target || '')) {
         openTwitchWindow(target);
         return { action: 'deny' };
@@ -101,6 +166,19 @@ const windowOpenPolicy = ({ url: target }) => {
     }
     return { action: 'deny' };
 };
+
+/**
+ * Carry the policy and the UA onto a window Electron created for us.
+ *
+ * A popup allowed above is a fresh webContents with no handler of its own, so a second `window.open` from inside
+ * the consent screen would land with default preferences and no partition — a signed-out window appearing
+ * mid-sign-in. The UA is re-set here as well because the session-level value does not reach a webContents that
+ * was already being constructed when it was applied.
+ */
+function adoptChildWindow(contents) {
+    contents.setUserAgent(DASHBOARD_USER_AGENT);
+    contents.setWindowOpenHandler(windowOpenPolicy);
+}
 
 /** Set on before-quit so a window closing during shutdown is remembered as "was open", not "user closed it". */
 let isQuitting = false;
@@ -189,9 +267,13 @@ function openDashboardWindow(dashboardId) {
         ? `${site}/dashboard-view?dashboardId=${encodeURIComponent(key)}`
         // No id: land on the normal page so the user can pick one, then use its pop-out button.
         : `${site}/dashboard`;
-    win.loadURL(url, { userAgent: DASHBOARD_USER_AGENT });
+    // The UA comes from the session (see applySessionUserAgent) so it survives every later navigation; it is set
+    // on this webContents too because the session value does not reach one already under construction.
+    win.webContents.setUserAgent(DASHBOARD_USER_AGENT);
+    win.loadURL(url);
 
     win.webContents.setWindowOpenHandler(windowOpenPolicy);
+    win.webContents.on('did-create-window', (child) => adoptChildWindow(child.webContents));
 
     /*
      * Apply the same policy INSIDE the Twitch Backstage webview.
@@ -202,7 +284,8 @@ function openDashboardWindow(dashboardId) {
      * a signed-out Twitch, which reads as "the embed made me log in again" for no visible reason.
      */
     win.webContents.on('did-attach-webview', (_event, guest) => {
-        guest.setWindowOpenHandler(windowOpenPolicy);
+        adoptChildWindow(guest);
+        guest.on('did-create-window', (child) => adoptChildWindow(child.webContents));
     });
 
     // Persist geometry as it changes rather than only on close, so a crash or a forced quit does not lose it.
@@ -240,7 +323,7 @@ function openTwitchWindow(target) {
     const url = target || 'https://dashboard.twitch.tv/';
     if (twitchWindow && !twitchWindow.isDestroyed()) {
         twitchWindow.focus();
-        twitchWindow.loadURL(url, { userAgent: DASHBOARD_USER_AGENT });
+        twitchWindow.loadURL(url);
         return { ok: true, reused: true };
     }
     twitchWindow = new BrowserWindow({
@@ -255,7 +338,11 @@ function openTwitchWindow(target) {
             nodeIntegration: false,
         },
     });
-    twitchWindow.loadURL(url, { userAgent: DASHBOARD_USER_AGENT });
+    // Twitch's own sign-in runs here when the backstage asks for it, so this window needs the same sticky UA and
+    // the same popup policy as a dashboard — it is the window most likely to be told "browser not supported".
+    adoptChildWindow(twitchWindow.webContents);
+    twitchWindow.webContents.on('did-create-window', (child) => adoptChildWindow(child.webContents));
+    twitchWindow.loadURL(url);
     twitchWindow.on('closed', () => { twitchWindow = null; });
     return { ok: true };
 }
@@ -271,6 +358,11 @@ function debounce(fn, ms) {
 
 function buildServices() {
     lbcbot = new LbcBot({ onLog: log });
+
+    updater = new Updater({
+        onLog: log,
+        onStatus: (status) => send('update-status', status),
+    });
 
     obs = new ObsBridge({
         onLog: log,
@@ -307,8 +399,17 @@ async function pushState() {
 function registerIpc() {
     ipcMain.handle('get-state', async () => {
         await pushState();
-        return { settings: store.settings(), logLines };
+        // The update status is returned rather than only pushed: a check can finish before the renderer has
+        // mounted, and an update that is ready to install must not be invisible until the next six-hour tick.
+        return { settings: store.settings(), logLines, update: updater.status, version: app.getVersion() };
     });
+
+    ipcMain.handle('check-for-updates', async () => {
+        updater.check();
+        return updater.status;
+    });
+
+    ipcMain.handle('restart-for-update', async () => updater.restartAndInstall());
 
     ipcMain.handle('update-settings', async (_event, patch) => {
         const updated = store.update(patch);
@@ -491,7 +592,11 @@ function registerIpc() {
 app.whenReady().then(async () => {
     buildServices();
     registerIpc();
+    // Before any window on the dashboard partition exists — a session UA does not reach WebContents that already
+    // do. See applySessionUserAgent.
+    applySessionUserAgent();
     createWindow();
+    updater.start();
 
     const settings = store.settings();
     if (store.hasCredential()) {
@@ -532,6 +637,9 @@ app.on('before-quit', () => {
 // The bridge is only useful while running, and a streamer closing the window means they are done with it — so quit
 // rather than lingering. (A tray-resident mode is the obvious later refinement.)
 app.on('window-all-closed', () => {
+    if (updater) {
+        updater.stop();
+    }
     if (obs) {
         obs.disconnect();
     }

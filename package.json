@@ -1,6 +1,6 @@
 {
   "name": "lbcbot-desktop",
-  "version": "1.0.0",
+  "version": "1.0.2",
   "description": "LBCBot desktop app — bridges OBS to LBCBot in both directions and sets up overlay browser sources.",
   "private": true,
   "author": {
@@ -18,6 +18,7 @@
   "license": "UNLICENSED",
   "dependencies": {
     "@stomp/stompjs": "^7.3.0",
+    "electron-updater": "^6.3.9",
     "obs-websocket-js": "^5.0.8",
     "sockjs-client": "^1.6.1"
   },
@@ -31,6 +32,13 @@
     "files": [
       "src/**/*",
       "package.json"
+    ],
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "ChrimLBC",
+        "repo": "lbcbot-desktop"
+      }
     ],
     "mac": {
       "category": "public.app-category.video",

@@ -123,6 +123,13 @@ h3 { margin: 0; font-size: 14px; font-weight: 600; }
     margin-bottom: 12px;
 }
 
+/* A fact about the card, sitting opposite its title — the running version, today. */
+.card__meta {
+    font-size: 12px;
+    opacity: 0.6;
+    font-variant-numeric: tabular-nums;
+}
+
 .row {
     display: flex;
     align-items: center;

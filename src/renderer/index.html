@@ -306,6 +306,22 @@
                     <input id="auto-connect" type="checkbox" />
                 </div>
             </section>
+
+            <!--
+              Updates. The restart is a button rather than something that happens on its own: this app is open
+              while live, and a window that closes itself mid-stream is worse than being a version behind.
+            -->
+            <section class="card">
+                <div class="card__head">
+                    <h3>Version</h3>
+                    <span id="app-version" class="card__meta"></span>
+                </div>
+                <p id="update-status" class="hint">Checking for updates…</p>
+                <div class="row row--actions">
+                    <button type="button" id="check-updates">Check for updates</button>
+                    <button type="button" id="restart-update" class="primary" hidden>Restart to update</button>
+                </div>
+            </section>
         </section>
 
         <!-- -------------------------------------------------------------- Activity -->

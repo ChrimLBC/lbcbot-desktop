@@ -53,6 +53,55 @@ function wireNav() {
     });
 }
 
+/**
+ * The update card's one line of text, plus whether a Restart button exists.
+ *
+ * <p>Every state says what it means for the user rather than naming the machinery. "unsupported" in particular
+ * has to explain itself: on a mac it is a real limitation (updates need a signed build) and silently showing
+ * nothing would read as a check that never finished.
+ */
+function applyUpdateStatus(status) {
+    if (!status) return;
+    const line = el('update-status');
+    const restart = el('restart-update');
+    const check = el('check-updates');
+
+    if (status.currentVersion) {
+        el('app-version').textContent = `v${status.currentVersion}`;
+    }
+
+    const ready = status.state === 'ready';
+    restart.hidden = !ready;
+    restart.disabled = false;
+    // Nothing left to check for once an update is downloaded — the next step is the restart.
+    check.disabled = ready || status.state === 'checking' || status.state === 'downloading'
+        || status.state === 'unsupported';
+
+    switch (status.state) {
+        case 'checking':
+            line.textContent = 'Checking for updates…';
+            break;
+        case 'current':
+            line.textContent = 'You are on the latest version.';
+            break;
+        case 'downloading':
+            line.textContent = `Downloading ${status.version || 'the update'}… ${status.percent || 0}%`;
+            break;
+        case 'ready':
+            line.textContent = `Version ${status.version} is ready. It installs when you restart — `
+                + 'or automatically the next time you close the app.';
+            break;
+        case 'unsupported':
+            line.textContent = status.reason || 'Automatic updates are not available here.';
+            break;
+        case 'error':
+            line.textContent = `Could not check for updates: ${status.error}`;
+            break;
+        default:
+            line.textContent = '';
+    }
+}
+
 function applyState(state) {
     if (!state) return;
     if (state.settings) {
@@ -464,7 +513,21 @@ function wire() {
     ['api-url', 'site-url', 'obs-url'].forEach((id) => el(id).addEventListener('change', persist));
     ['forward-events', 'auto-connect'].forEach((id) => el(id).addEventListener('change', persist));
 
+    el('check-updates').addEventListener('click', async () => {
+        el('update-status').textContent = 'Checking…';
+        applyUpdateStatus(await window.lbcbot.checkForUpdates());
+    });
+    el('restart-update').addEventListener('click', async () => {
+        el('restart-update').disabled = true;
+        const result = await window.lbcbot.restartForUpdate();
+        if (!result || !result.ok) {
+            el('restart-update').disabled = false;
+            el('update-status').textContent = (result && result.error) || 'Could not start the update.';
+        }
+    });
+
     window.lbcbot.onState(applyState);
+    window.lbcbot.onUpdateStatus(applyUpdateStatus);
     window.lbcbot.onLog(appendLog);
     window.lbcbot.onObsStatus((status) => setStatus('obs', status.connected));
     window.lbcbot.onDeviceCode((grant) => {
@@ -477,8 +540,11 @@ function wire() {
     wireNav();
     wire();
     wireTemplates();
-    const { logLines } = await window.lbcbot.getState();
+    const { logLines, update } = await window.lbcbot.getState();
     (logLines || []).forEach(appendLog);
+    // Pulled rather than waited for: the first check can finish before this window mounts, and an update sitting
+    // ready to install must not be invisible until the next six-hour tick.
+    applyUpdateStatus(update);
     fillTemplateForm(null);
     await refreshOverlays();
     await refreshDashboards();

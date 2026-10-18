@@ -40,6 +40,11 @@ contextBridge.exposeInMainWorld('lbcbot', {
     applyStreamTemplate: (id) => ipcRenderer.invoke('apply-stream-template', id),
     searchTwitchCategories: (query) => ipcRenderer.invoke('search-twitch-categories', query),
 
+    // Updates. The renderer can ask for a check and can apply a downloaded one; it never sees a URL or a file,
+    // and cannot make the app install anything that electron-updater has not already verified by checksum.
+    checkForUpdates: () => ipcRenderer.invoke('check-for-updates'),
+    restartForUpdate: () => ipcRenderer.invoke('restart-for-update'),
+
     // Push channels. Each returns an unsubscribe so a re-render cannot stack duplicate listeners.
     onState: (handler) => {
         const listener = (_event, payload) => handler(payload);
@@ -55,6 +60,11 @@ contextBridge.exposeInMainWorld('lbcbot', {
         const listener = (_event, status) => handler(status);
         ipcRenderer.on('obs-status', listener);
         return () => ipcRenderer.removeListener('obs-status', listener);
+    },
+    onUpdateStatus: (handler) => {
+        const listener = (_event, status) => handler(status);
+        ipcRenderer.on('update-status', listener);
+        return () => ipcRenderer.removeListener('update-status', listener);
     },
     onDeviceCode: (handler) => {
         const listener = (_event, grant) => handler(grant);

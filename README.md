@@ -88,6 +88,36 @@ API** for:
 - **Raid Now** — `POST /helix/raids` starts the 90-second countdown and there is no parameter or endpoint to
   skip it. Pressing Raid Now in the embedded backstage is the only way to raid immediately.
 
+## Releasing, and how an installed copy updates itself
+
+Tag and push; the Windows workflow does the rest.
+
+```bash
+git tag v1.0.3 && git push origin v1.0.3
+```
+
+**The tag is the version.** The workflow writes `${TAG#v}` into `package.json` before building, so the version
+compiled into the app always matches the release it came from. This is not tidiness — it is the thing that makes
+updates work, and getting it wrong is silent. v1.0.1 was tagged without bumping `package.json`, so it shipped an
+app that still called itself 1.0.0; every installed copy compared 1.0.0 to 1.0.0, decided it was current, and the
+release reached nobody while the release page looked perfectly healthy.
+
+**Three files make a release, not one.** `electron-builder` writes `latest.yml` beside the installer, and that
+file — version, filename, sha512 — is the only thing an installed copy reads to discover a new version exists.
+The `.blockmap` lets the updater fetch just the changed chunks. Publishing only the `.exe` produces releases that
+are invisible to everyone who already has the app.
+
+An installed app checks on launch and every six hours, downloads in the background, and then **waits**: the
+Settings pane offers a Restart button and the update otherwise applies on the next normal quit. Nothing restarts
+itself — this app is open while someone is live.
+
+**Windows only.** Squirrel.Mac refuses to update an app that is not code-signed, so a mac build cannot
+self-update until there is a Developer ID certificate; the Settings pane says so there rather than pretending to
+check. There is also no mac build in CI yet — the website's download button is the Windows installer.
+
+> Anyone running a build from **before** v1.0.2 has no updater in it at all and has to download the installer
+> once by hand. Self-updating starts from the version after that.
+
 ## Known gaps
 
 - **Never run against real OBS.** Module loading, the action vocabulary (every type verified against a stubbed

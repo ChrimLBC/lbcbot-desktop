@@ -30,10 +30,26 @@ jobs:
       # was reviewed rather than whatever resolves on the day.
       - run: npm ci
 
+      # The tag IS the version.
+      #
+      # electron-builder stamps the app from package.json, and the updater compares that stamp against the
+      # version in the published latest.yml. Tagging v1.0.1 without bumping package.json therefore ships an app
+      # that still calls itself 1.0.0: it compares 1.0.0 to 1.0.0, decides it is current, and the release reaches
+      # nobody. That is exactly what v1.0.1 was. Writing the tag's version in here makes the two impossible to
+      # drift — the committed package.json version stops being load-bearing.
+      - name: Set version from tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: npm version "${GITHUB_REF_NAME#v}" --no-git-tag-version --allow-same-version
+
       # No code signing. An unsigned installer makes Windows SmartScreen warn ("Windows protected your PC" →
       # More info → Run anyway) but still installs, which is an acceptable trade while this is pre-beta.
       # Signing needs a purchased OV/EV certificate; when there is one, add CSC_LINK / CSC_KEY_PASSWORD
       # secrets and electron-builder picks them up with no change here.
+      #
+      # `--publish never` still WRITES dist/latest.yml (the publish config in package.json is what makes it
+      # generate); it just does not upload it. The release step below does that, so the upload stays one
+      # explicit, tag-gated action.
       - name: Build installer
         run: npx electron-builder --win --publish never
 
@@ -43,15 +59,25 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: LBCBot-Setup-windows
-          path: dist/*.exe
+          path: |
+            dist/*.exe
+            dist/latest.yml
           if-no-files-found: error
 
       # Only on a tag. The website's download button points at this release's asset, so publishing is what
       # makes a version live for users.
+      #
+      # latest.yml and the .blockmap are NOT optional extras. latest.yml is the only thing an installed copy
+      # reads to discover that a new version exists — publish just the .exe and every existing install stays
+      # frozen while the release page looks perfectly complete. The .blockmap is what lets the updater download
+      # only the changed chunks instead of the whole installer.
       - name: Publish GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/*.exe
+          files: |
+            dist/*.exe
+            dist/*.blockmap
+            dist/latest.yml
           generate_release_notes: true
           fail_on_unmatched_files: true
