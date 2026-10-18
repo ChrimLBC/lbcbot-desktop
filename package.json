@@ -3,6 +3,11 @@
   "version": "1.0.0",
   "description": "LBCBot desktop app — bridges OBS to LBCBot in both directions and sets up overlay browser sources.",
   "private": true,
+  "author": {
+    "name": "LBCBot",
+    "email": "chrisleblanc1432@gmail.com"
+  },
+  "homepage": "https://lbcbot.devsoperative.com",
   "main": "src/main/index.js",
   "scripts": {
     "start": "electron .",
@@ -36,7 +41,16 @@
     "win": {
       "target": [
         "nsis"
-      ]
+      ],
+      "artifactName": "LBCBot-Setup-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "perMachine": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "LBCBot"
     },
     "linux": {
       "target": [

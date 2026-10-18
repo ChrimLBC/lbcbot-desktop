@@ -1,0 +1,57 @@
+name: Release (Windows)
+
+# Tag-driven, not push-driven. A desktop release is a thing people download and keep, so it should be an
+# explicit act with a version attached — not a side effect of every commit to main. Also runnable by hand
+# from the Actions tab to produce an unpublished build for testing.
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  windows:
+    # Must be a real Windows runner. electron-builder can cross-build NSIS from macOS/Linux only via Wine,
+    # which is a fragile extra dependency for no benefit when GitHub hands us Windows for free.
+    runs-on: windows-latest
+    permissions:
+      # Needed to create the release and upload the installer to it.
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      # `npm ci` against the committed lockfile, so a release is built from exactly the dependency tree that
+      # was reviewed rather than whatever resolves on the day.
+      - run: npm ci
+
+      # No code signing. An unsigned installer makes Windows SmartScreen warn ("Windows protected your PC" →
+      # More info → Run anyway) but still installs, which is an acceptable trade while this is pre-beta.
+      # Signing needs a purchased OV/EV certificate; when there is one, add CSC_LINK / CSC_KEY_PASSWORD
+      # secrets and electron-builder picks them up with no change here.
+      - name: Build installer
+        run: npx electron-builder --win --publish never
+
+      # Always available, tag or not — this is what makes workflow_dispatch useful for testing a build before
+      # committing to a version number.
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: LBCBot-Setup-windows
+          path: dist/*.exe
+          if-no-files-found: error
+
+      # Only on a tag. The website's download button points at this release's asset, so publishing is what
+      # makes a version live for users.
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.exe
+          generate_release_notes: true
+          fail_on_unmatched_files: true
