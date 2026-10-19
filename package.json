@@ -1,6 +1,6 @@
 {
   "name": "lbcbot-desktop",
-  "version": "1.0.2",
+  "version": "1.0.7",
   "description": "LBCBot desktop app — bridges OBS to LBCBot in both directions and sets up overlay browser sources.",
   "private": true,
   "author": {
