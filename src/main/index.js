@@ -189,6 +189,12 @@ const windowOpenPolicy = ({ url: target }) => {
             },
         };
     }
+    // A dashboard card's "Sign in to Twitch" button. Opened as THE sign-in window, so it closes itself and every
+    // card reloads the moment Twitch accepts the login (see watchTwitchSessionCookie).
+    if (/^https:\/\/www\.twitch\.tv\/login\/?(\?|$)/i.test(target || '')) {
+        openTwitchSignIn();
+        return { action: 'deny' };
+    }
     if (/^https:\/\/([a-z0-9-]+\.)*twitch\.tv\//i.test(target || '')) {
         openTwitchWindow(target);
         return { action: 'deny' };
@@ -466,7 +472,7 @@ async function clearTwitchDeviceData() {
  * one place it is readable from here — the passport response body is not visible to webRequest. Once per app run:
  * if a fresh device is refused too, the cause is something else and repeating the reset would only loop.
  */
-function watchForIntegrityRejection(contents, retry = () => contents.loadURL(TWITCH_LOGIN_URL)) {
+function watchForIntegrityRejection(contents) {
     contents.on('console-message', async (event, _level, legacyMessage) => {
         const message = (event && event.message) || legacyMessage || '';
         if (twitchDeviceReset || !/integrity error/i.test(message)) {
@@ -476,16 +482,13 @@ function watchForIntegrityRejection(contents, retry = () => contents.loadURL(TWI
         log('Twitch refused this device ("browser not supported"). Resetting its Twitch data and retrying sign-in.');
         await clearTwitchDeviceData();
         if (!contents.isDestroyed()) {
-            retry();
+            contents.loadURL(TWITCH_LOGIN_URL);
         }
     });
 }
 
 /** Backstage webviews currently attached, so a completed sign-in can reload them all. */
 const backstageGuests = new Set();
-
-/** Guests already sent to sign in once — closing the window without signing in must not reopen it on every load. */
-const promptedGuests = new WeakSet();
 
 /** True while the Twitch window is open for a sign-in WE started, so only that window is closed afterwards. */
 let twitchSignInPending = false;
@@ -498,31 +501,28 @@ async function twitchSignedIn() {
     return cookies.length > 0;
 }
 
+/**
+ * Track a backstage webview so a completed sign-in can reload it.
+ *
+ * Deliberately does NOT open the sign-in window by itself. It used to, on every signed-out load, which put a
+ * window on screen next to each card's own Twitch login form — several login forms, only one of which worked.
+ * Now a signed-out card shows a single "Sign in to Twitch" button (frontend), and that click is the only thing
+ * that opens the window (see windowOpenPolicy).
+ */
 function watchBackstageSignIn(guest) {
     backstageGuests.add(guest);
     guest.once('destroyed', () => backstageGuests.delete(guest));
-    // Someone typing into the card's own inline login can be refused the same way; recover into the window.
-    watchForIntegrityRejection(guest, () => {
-        twitchSignInPending = true;
-        openTwitchWindow(TWITCH_LOGIN_URL);
-    });
-    guest.on('did-finish-load', async () => {
-        if (guest.isDestroyed() || promptedGuests.has(guest) || !/\.twitch\.tv$/i.test(hostOf(guest.getURL()) || '')) {
-            return;
-        }
-        if (await twitchSignedIn()) {
-            return;
-        }
-        promptedGuests.add(guest);
-        // Several backstage cards load signed out together. One sign-in serves them all (the cookie watcher
-        // reloads every guest), and re-opening would reload the login page under someone mid-password.
-        if (twitchSignInPending && twitchWindow && !twitchWindow.isDestroyed()) {
-            return;
-        }
-        log('Twitch backstage is signed out — opening Twitch sign-in in its own window.');
-        twitchSignInPending = true;
-        openTwitchWindow(TWITCH_LOGIN_URL);
-    });
+}
+
+/** The card's sign-in button: one window, focused if already open so a second click cannot wipe a half-typed login. */
+function openTwitchSignIn() {
+    if (twitchSignInPending && twitchWindow && !twitchWindow.isDestroyed()) {
+        twitchWindow.focus();
+        return;
+    }
+    log('Opening Twitch sign-in.');
+    twitchSignInPending = true;
+    openTwitchWindow(TWITCH_LOGIN_URL);
 }
 
 /**
