@@ -325,6 +325,7 @@ function openDashboardWindow(dashboardId) {
     win.webContents.on('did-attach-webview', (_event, guest) => {
         adoptChildWindow(guest);
         guest.on('did-create-window', (child) => adoptChildWindow(child.webContents));
+        watchBackstageSignIn(guest);
     });
 
     // Persist geometry as it changes rather than only on close, so a crash or a forced quit does not lose it.
@@ -396,9 +397,170 @@ function openTwitchWindow(target) {
     // the same popup policy as a dashboard — it is the window most likely to be told "browser not supported".
     adoptChildWindow(twitchWindow.webContents);
     twitchWindow.webContents.on('did-create-window', (child) => adoptChildWindow(child.webContents));
+    watchForIntegrityRejection(twitchWindow.webContents);
     twitchWindow.loadURL(url);
-    twitchWindow.on('closed', () => { twitchWindow = null; });
+    twitchWindow.on('closed', () => {
+        twitchWindow = null;
+        twitchSignInPending = false;
+    });
     return { ok: true };
+}
+
+/**
+ * Twitch sign-in for the backstage widget happens in the Twitch window, not in the `<webview>`'s inline form.
+ *
+ * <h3>The "browser not supported" failure, and what actually causes it</h3>
+ *
+ * Twitch answers a refused login with passport `error_code: 5025` and logs "Browser not supported - integrity
+ * error". Despite the wording it is not about the UA: with the same Electron, UA, client hints and partition, a
+ * login failed against one partition and succeeded against a fresh one. What differed was Twitch's DEVICE state
+ * on .twitch.tv — the `unique_id` device cookie and integrity storage — which builds that announced a stale
+ * Chrome had accumulated failed attempts against. Twitch keeps refusing that device; clearing its Twitch data
+ * makes it a new device, and the login goes through (verified on Windows, Electron 43). See
+ * {@link watchForIntegrityRejection}, which does that clear automatically.
+ *
+ * <h3>Why a separate window at all</h3>
+ *
+ * Signed out, dashboard.twitch.tv renders its login inline with no navigation to hook, and a login form squeezed
+ * into a dashboard card is a poor place to type a password and a 2FA code. So a signed-out backstage opens the
+ * Twitch window instead. It shares the partition, so the `auth-token` cookie it earns is the embed's too; the
+ * cookie watcher then closes that window and reloads the embeds, which come back signed in.
+ */
+const TWITCH_AUTH_COOKIE = 'auth-token';
+/*
+ * The sign-in page: LBCBot's OAuth authorize URL, which redirects to Twitch's login.
+ *
+ * This is the path verified end to end on a clean device, and it leaves the same full `auth-token` web session on
+ * .twitch.tv as any Twitch login — all the backstage needs. The cookie lands the moment the password is accepted,
+ * before the consent screen, and the cookie watcher closes the window right then, so nothing is authorized here.
+ */
+const TWITCH_LBCBOT_CLIENT_ID = 'si19qnvsuhkwcm97xwoonntwz36bq9';
+const TWITCH_LOGIN_URL = 'https://id.twitch.tv/oauth2/authorize?' + new URLSearchParams({
+    client_id: TWITCH_LBCBOT_CLIENT_ID,
+    response_type: 'code',
+    redirect_uri: 'https://lbcbot.devsoperative.com/auth',
+    scope: 'user:read:email',
+    force_verify: 'true',
+    state: 'desktop-backstage-signin',
+}).toString();
+
+/** Set once the Twitch device data has been reset this run, so a login that still fails cannot loop the reset. */
+let twitchDeviceReset = false;
+
+/** Forget this partition's Twitch device: every .twitch.tv cookie and the storage of Twitch's own origins. */
+async function clearTwitchDeviceData() {
+    const s = session.fromPartition(DASHBOARD_PARTITION);
+    const cookies = (await s.cookies.get({})).filter((c) => /(^|\.)twitch\.tv$/i.test((c.domain || '').replace(/^\./, '')));
+    await Promise.all(cookies.map((c) => s.cookies
+        .remove(`https://${c.domain.replace(/^\./, '')}${c.path || '/'}`, c.name)
+        .catch(() => {})));
+    const origins = ['www.twitch.tv', 'dashboard.twitch.tv', 'id.twitch.tv', 'passport.twitch.tv', 'gql.twitch.tv', 'm.twitch.tv'];
+    await Promise.all(origins.map((o) => s.clearStorageData({ origin: `https://${o}` }).catch(() => {})));
+    await s.flushStorageData();
+}
+
+/**
+ * Recover from Twitch refusing this device: on its "integrity error", reset the device once and retry sign-in.
+ *
+ * Twitch's login page logs the refusal to its console ("Browser not supported - integrity error"), which is the
+ * one place it is readable from here — the passport response body is not visible to webRequest. Once per app run:
+ * if a fresh device is refused too, the cause is something else and repeating the reset would only loop.
+ */
+function watchForIntegrityRejection(contents, retry = () => contents.loadURL(TWITCH_LOGIN_URL)) {
+    contents.on('console-message', async (event, _level, legacyMessage) => {
+        const message = (event && event.message) || legacyMessage || '';
+        if (twitchDeviceReset || !/integrity error/i.test(message)) {
+            return;
+        }
+        twitchDeviceReset = true;
+        log('Twitch refused this device ("browser not supported"). Resetting its Twitch data and retrying sign-in.');
+        await clearTwitchDeviceData();
+        if (!contents.isDestroyed()) {
+            retry();
+        }
+    });
+}
+
+/** Backstage webviews currently attached, so a completed sign-in can reload them all. */
+const backstageGuests = new Set();
+
+/** Guests already sent to sign in once — closing the window without signing in must not reopen it on every load. */
+const promptedGuests = new WeakSet();
+
+/** True while the Twitch window is open for a sign-in WE started, so only that window is closed afterwards. */
+let twitchSignInPending = false;
+
+async function twitchSignedIn() {
+    const cookies = await session.fromPartition(DASHBOARD_PARTITION).cookies.get({
+        domain: 'twitch.tv',
+        name: TWITCH_AUTH_COOKIE,
+    });
+    return cookies.length > 0;
+}
+
+function watchBackstageSignIn(guest) {
+    backstageGuests.add(guest);
+    guest.once('destroyed', () => backstageGuests.delete(guest));
+    // Someone typing into the card's own inline login can be refused the same way; recover into the window.
+    watchForIntegrityRejection(guest, () => {
+        twitchSignInPending = true;
+        openTwitchWindow(TWITCH_LOGIN_URL);
+    });
+    guest.on('did-finish-load', async () => {
+        if (guest.isDestroyed() || promptedGuests.has(guest) || !/\.twitch\.tv$/i.test(hostOf(guest.getURL()) || '')) {
+            return;
+        }
+        if (await twitchSignedIn()) {
+            return;
+        }
+        promptedGuests.add(guest);
+        // Several backstage cards load signed out together. One sign-in serves them all (the cookie watcher
+        // reloads every guest), and re-opening would reload the login page under someone mid-password.
+        if (twitchSignInPending && twitchWindow && !twitchWindow.isDestroyed()) {
+            return;
+        }
+        log('Twitch backstage is signed out — opening Twitch sign-in in its own window.');
+        twitchSignInPending = true;
+        openTwitchWindow(TWITCH_LOGIN_URL);
+    });
+}
+
+/**
+ * Call once at startup: finishes a backstage sign-in the moment Twitch hands the partition its session cookie.
+ *
+ * Acts only on the signed-out → signed-in edge. Twitch rewrites `auth-token` while already signed in, and
+ * reloading every backstage on each rewrite would loop a streamer's embed mid-stream.
+ */
+function watchTwitchSessionCookie() {
+    let signedIn = true; // Assume signed in until checked, so a rewrite during the check cannot trigger a reload.
+    twitchSignedIn().then((value) => { signedIn = value; }, () => { signedIn = false; });
+    session.fromPartition(DASHBOARD_PARTITION).cookies.on('changed', (_event, cookie, cause, removed) => {
+        if (cookie.name !== TWITCH_AUTH_COOKIE || !/(^|\.)twitch\.tv$/i.test(cookie.domain || '')) {
+            return;
+        }
+        // An overwrite arrives as a removal (cause "overwrite") followed by an add — still signed in throughout.
+        // Any other removal is a real sign-out or expiry.
+        if (removed) {
+            if (!/overwrite/.test(cause)) {
+                signedIn = false;
+            }
+            return;
+        }
+        if (signedIn) {
+            return;
+        }
+        signedIn = true;
+        log('Signed in to Twitch — reloading the backstage.');
+        if (twitchSignInPending && twitchWindow && !twitchWindow.isDestroyed()) {
+            twitchWindow.close();
+        }
+        twitchSignInPending = false;
+        backstageGuests.forEach((guest) => {
+            if (!guest.isDestroyed()) {
+                guest.reload();
+            }
+        });
+    });
 }
 
 /** Trailing debounce. Resize and move fire per frame; writing settings.json that often would be absurd. */
@@ -673,6 +835,7 @@ app.whenReady().then(async () => {
     // Before any window on the dashboard partition exists — a session UA does not reach WebContents that already
     // do. See applySessionUserAgent.
     applySessionUserAgent();
+    watchTwitchSessionCookie();
     createWindow();
     updater.start();
 
