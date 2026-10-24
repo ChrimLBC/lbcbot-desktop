@@ -19,11 +19,11 @@ jobs:
       contents: write
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
 
       # `npm ci` against the committed lockfile, so a release is built from exactly the dependency tree that
@@ -56,7 +56,7 @@ jobs:
       # Always available, tag or not — this is what makes workflow_dispatch useful for testing a build before
       # committing to a version number.
       - name: Upload build artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: LBCBot-Setup-windows
           path: |
@@ -73,7 +73,7 @@ jobs:
       # only the changed chunks instead of the whole installer.
       - name: Publish GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: |
             dist/*.exe
