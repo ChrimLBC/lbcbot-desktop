@@ -144,6 +144,15 @@ const hostOf = (target) => {
         return null;
     }
 };
+const pathOf = (target) => {
+    try {
+        return new URL(target).pathname.replace(/\/+$/, '') || '/';
+    } catch {
+        return null;
+    }
+};
+/** Our own pages that open in the system browser rather than in-app. Must match routes.SONG_PLAYER in the web app. */
+const EXTERNAL_PATHS = ['/song-player'];
 
 /** The configured site's own host, so the OAuth callback leg is recognised as ours rather than as a stray link. */
 const siteHost = () => hostOf((store.settings().siteUrl || '').replace(/\/+$/, '') || 'about:blank');
@@ -170,6 +179,15 @@ const siteHost = () => hostOf((store.settings().siteUrl || '').replace(/\/+$/, '
 const windowOpenPolicy = ({ url: target }) => {
     const host = hostOf(target || '');
     const ours = host && host === siteHost();
+    /*
+     * Pages of ours that must NOT run in here: the song player. YouTube serves ads to any plain Chromium, this app
+     * included, and the streamer's YouTube Premium login or ad blocker lives in their own browser — which an app
+     * cannot borrow or embed. So the Media Queue card's "Your browser" opens the player in the system browser.
+     */
+    if (ours && EXTERNAL_PATHS.includes(pathOf(target))) {
+        shell.openExternal(target);
+        return { action: 'deny' };
+    }
     if (host && (AUTH_HOSTS.test(host) || ours)) {
         return {
             action: 'allow',
