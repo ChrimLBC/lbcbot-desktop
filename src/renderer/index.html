@@ -23,19 +23,24 @@
 -->
 <div class="app">
     <aside class="nav">
+        <!-- The same brand mark and nav as the website (teal→violet tile, teal active bar), so the app and the
+             dashboards it opens read as one product. Icons are inline SVG: the CSP allows no icon font. -->
         <div class="nav__brand">
-            <h1>LBCBot</h1>
-            <p class="nav__sub">Leave running while you stream</p>
+            <span class="brand-mark"><svg class="brand-mark__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg></span>
+            <div>
+                <h1>LBCBot</h1>
+                <p class="nav__sub">Keep this open while you stream</p>
+            </div>
         </div>
 
         <!-- data-pane maps to a .pane id below; the renderer wires these generically. -->
         <nav class="nav__items">
-            <button type="button" class="nav__item is-active" data-pane="status">Status</button>
-            <button type="button" class="nav__item" data-pane="templates">Stream setup</button>
-            <button type="button" class="nav__item" data-pane="dashboards">Dashboards</button>
-            <button type="button" class="nav__item" data-pane="overlays">Overlays</button>
-            <button type="button" class="nav__item" data-pane="settings">Settings</button>
-            <button type="button" class="nav__item" data-pane="activity">Activity</button>
+            <button type="button" class="nav__item is-active" data-pane="status"><svg class="nav__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg><span>Status</span></button>
+            <button type="button" class="nav__item" data-pane="templates"><svg class="nav__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg><span>Stream setup</span></button>
+            <button type="button" class="nav__item" data-pane="dashboards"><svg class="nav__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/></svg><span>Dashboards</span></button>
+            <button type="button" class="nav__item" data-pane="overlays"><svg class="nav__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg><span>Overlays</span></button>
+            <button type="button" class="nav__item" data-pane="settings"><svg class="nav__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg><span>Settings</span></button>
+            <button type="button" class="nav__item" data-pane="activity"><svg class="nav__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg><span>Activity</span></button>
         </nav>
 
         <div class="nav__status">
@@ -56,16 +61,27 @@
         <!-- ---------------------------------------------------------------- Status -->
         <section class="pane is-active" id="pane-status">
             <header class="pane__head">
+                <span class="pane__mark"><svg class="pane__mark-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg></span>
                 <h2>Status</h2>
                 <p class="pane__sub">Connect this machine to your account and to OBS.</p>
             </header>
 
             <section class="card">
-                <div class="card__head"><h3>LBCBot</h3></div>
+                <div class="card__head">
+                    <h3>LBCBot</h3>
+                    <!--
+                      Connection state repeated HERE, not only on the sidebar pill. This is the card where you
+                      act on it, and "am I already connected?" is the question you arrive with — answering it
+                      beside the Connect button saves looking away to the rail to find out.
+                    -->
+                    <span class="conn" id="lbc-conn">
+                        <span class="dot dot--off" id="lbc-conn-dot"></span>
+                        <span id="lbc-conn-text">Checking…</span>
+                    </span>
+                </div>
                 <p class="hint">
-                    Links this machine to your account using a one-time code. The credential is stored encrypted in
-                    your OS keychain — forgetting it here does not revoke it, do that under Connected apps on the
-                    website.
+                    Links this computer to your LBCBot account with a one-time code. To remove it for good, use
+                    Connected apps on the website.
                 </p>
                 <div class="row row--actions">
                     <button id="lbc-connect" class="primary">Connect</button>
@@ -90,20 +106,17 @@
                     <span id="youtube-state" class="platform__state">Checking…</span>
                 </div>
                 <div class="row row--actions">
-                    <button id="open-integrations" class="primary">Manage connections</button>
+                    <button id="open-integrations">Manage connections</button>
                 </div>
                 <p class="hint">
-                    Connections belong to your account rather than to this machine, so linking happens on the
-                    website and this app picks it up. Opens in your normal browser — a sign-in screen should be
-                    somewhere you can see the real address bar.
+                    Link Twitch and YouTube on the website — this app picks them up. Opens in your normal browser.
                 </p>
             </section>
 
             <section class="card">
                 <div class="card__head"><h3>OBS</h3></div>
                 <p class="hint">
-                    OBS 28 and later already include the WebSocket server — enable it under Tools → WebSocket
-                    Server Settings. Nothing needs installing into OBS itself.
+                    In OBS, open Tools → WebSocket Server Settings, turn it on, and copy the password here.
                 </p>
                 <div class="row">
                     <label for="obs-password">Password</label>
@@ -119,10 +132,11 @@
         <!-- ------------------------------------------------------------- Templates -->
         <section class="pane" id="pane-templates">
             <header class="pane__head">
+                <span class="pane__mark"><svg class="pane__mark-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg></span>
                 <h2>Stream setup</h2>
                 <p class="pane__sub">
-                    Save a title, category and tags once, then push them to Twitch and YouTube together — for
-                    switching games mid-stream, or getting set up before going live.
+                    Save a title, category and tags, then apply them in one click — before you go live or when you
+                    switch games.
                 </p>
             </header>
 
@@ -130,7 +144,7 @@
                 <section class="card split__list">
                     <div class="card__head">
                         <h3>Templates</h3>
-                        <button id="template-new" class="primary">New</button>
+                        <button id="template-new">+ New</button>
                     </div>
                     <ul id="template-list" class="list"></ul>
                 </section>
@@ -138,14 +152,24 @@
                 <section class="card split__editor">
                     <div class="card__head">
                         <h3 id="template-editor-title">Template</h3>
-                        <button id="template-apply" class="primary">Apply now</button>
+                        <button id="template-apply">Apply now</button>
                     </div>
 
                     <div class="row">
                         <label for="template-name">Template name</label>
                         <input id="template-name" type="text" spellcheck="false" placeholder="Spyro" />
                     </div>
+                    <!-- One platform per template, the same as the website. A new template picks its platform here;
+                         the choice only appears when both are linked, and an existing template keeps its own. -->
+                    <div class="row" id="tpl-platform-row" hidden>
+                        <label>Platform</label>
+                        <div class="seg" id="tpl-platform">
+                            <button type="button" data-platform="TWITCH">Twitch</button>
+                            <button type="button" data-platform="YOUTUBE">YouTube</button>
+                        </div>
+                    </div>
 
+                    <div id="tpl-twitch">
                     <h4 class="group">Twitch</h4>
                     <div class="row">
                         <label for="tw-title">Title</label>
@@ -165,6 +189,9 @@
                         <input id="tw-tags" type="text" placeholder="comma, separated" />
                     </div>
 
+                    </div>
+
+                    <div id="tpl-youtube">
                     <h4 class="group">YouTube</h4>
                     <div class="row">
                         <label for="yt-title">Title</label>
@@ -192,15 +219,10 @@
                     </div>
 
                     <p class="hint">
-                        Made for kids is always sent as <strong>no</strong>. Declaring a stream child-directed
-                        disables chat, and doing that by accident from a saved template would not be recoverable
-                        mid-stream — set it in YouTube Studio if you ever genuinely need it.
+                        "Made for kids" is always set to no, so chat stays on. The game on a YouTube stream can only
+                        be set in YouTube Studio.
                     </p>
-                    <p class="hint">
-                        YouTube has no API for the <strong>game</strong> on a gaming stream — it is only settable
-                        through Studio's own picker, so it cannot be part of a template. Twitch's category below
-                        is unaffected.
-                    </p>
+                    </div>
 
                     <div class="row row--actions">
                         <button id="template-save" class="primary">Save</button>
@@ -214,6 +236,7 @@
         <!-- ------------------------------------------------------------ Dashboards -->
         <section class="pane" id="pane-dashboards">
             <header class="pane__head">
+                <span class="pane__mark"><svg class="pane__mark-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/></svg></span>
                 <h2>Dashboards</h2>
                 <p class="pane__sub">Your control dashboards, each in its own window.</p>
             </header>
@@ -228,18 +251,14 @@
                     <select id="dashboard-select"></select>
                     <button id="open-dashboard" class="primary">Open window</button>
                 </div>
+                <!-- Why a dashboard would not open: almost always that this machine is not connected yet. -->
+                <p id="dashboard-status" class="hint"></p>
                 <p class="hint">
-                    Open as many as you like — each remembers its size and position, and whichever are open when you
-                    quit come back on the next launch. You sign in once and it remembers you.
+                    Open as many as you like. Each one remembers where you put it and comes back next time.
                 </p>
                 <p class="hint">
-                    This is also the only place the Twitch Backstage widget works properly: Twitch refuses to be
-                    embedded in a web page, so Raid Now and Start Sharing Chat — neither of which Twitch exposes an
-                    API for — are reachable here and nowhere else.
-                </p>
-                <p class="hint">
-                    Media playback still belongs in your normal browser: YouTube embeds serve ads in any plain
-                    Chromium, this one included. The Media Queue widget drives playback rather than hosting it.
+                    Twitch Backstage (Raid Now, Shared Chat) only works in these windows, not in a web browser.
+                    Songs and videos still play in your normal browser.
                 </p>
             </section>
         </section>
@@ -247,6 +266,7 @@
         <!-- -------------------------------------------------------------- Overlays -->
         <section class="pane" id="pane-overlays">
             <header class="pane__head">
+                <span class="pane__mark"><svg class="pane__mark-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg></span>
                 <h2>Overlays</h2>
                 <p class="pane__sub">Add an overlay to OBS as a correctly sized browser source.</p>
             </header>
@@ -262,8 +282,8 @@
                 </div>
                 <ul id="overlay-list" class="list"></ul>
                 <p class="hint">
-                    The browser source is created with a scoped overlay key. The URL is never shown or copied, so it
-                    cannot end up in a screenshot — and you can revoke it any time under Connected apps.
+                    Each overlay gets its own private link, so it never shows up in a screenshot. Remove it any time
+                    under Connected apps on the website.
                 </p>
             </section>
         </section>
@@ -271,6 +291,7 @@
         <!-- -------------------------------------------------------------- Settings -->
         <section class="pane" id="pane-settings">
             <header class="pane__head">
+                <span class="pane__mark"><svg class="pane__mark-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg></span>
                 <h2>Settings</h2>
                 <p class="pane__sub">Where this app points, and what it does on launch.</p>
             </header>
@@ -290,8 +311,8 @@
                     <input id="obs-url" type="text" spellcheck="false" placeholder="ws://127.0.0.1:4455" />
                 </div>
                 <p class="hint">
-                    The website URL has to match where the frontend is actually served, or the browser sources this
-                    app creates will point at the wrong host.
+                    Only change these if you were asked to. If the website address is wrong, overlays added to OBS
+                    won't load.
                 </p>
             </section>
 
@@ -327,8 +348,9 @@
         <!-- -------------------------------------------------------------- Activity -->
         <section class="pane" id="pane-activity">
             <header class="pane__head">
+                <span class="pane__mark"><svg class="pane__mark-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg></span>
                 <h2>Activity</h2>
-                <p class="pane__sub">What the bridge has been doing. Check here first when something looks wrong.</p>
+                <p class="pane__sub">What the app has been doing. Look here first when something isn't working.</p>
             </header>
             <pre id="log" class="log"></pre>
         </section>

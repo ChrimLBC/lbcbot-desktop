@@ -27,6 +27,25 @@ function setStatus(name, on) {
     // lines. The dot carries the same meaning anyway, so the word only has to confirm it.
     setPill(el(`${name}-status`), on, 'Connected', 'Offline');
     el(`${name}-dot`).className = `dot ${on ? 'dot--on' : 'dot--off'}`;
+
+    // Only offer what can happen now: Connect while offline, Disconnect while connected. ("Forget credential" stays
+    // for LBCBot — a stored credential can exist whether or not it is currently connected.)
+    const connectBtn = el(name === 'lbc' ? 'lbc-connect' : 'obs-connect');
+    if (connectBtn) connectBtn.hidden = !!on;
+    if (name === 'obs' && el('obs-disconnect')) el('obs-disconnect').hidden = !on;
+
+    /*
+     * Mirror it onto the card that owns the action, where one exists.
+     *
+     * Here there is room for the full phrase, so it says "Not connected" rather than the rail's clipped
+     * "Offline" — this is the line you read before deciding whether to press Connect.
+     */
+    const dot = el(`${name}-conn-dot`);
+    const text = el(`${name}-conn-text`);
+    if (dot && text) {
+        dot.className = `dot ${on ? 'dot--on' : 'dot--off'}`;
+        text.textContent = on ? 'Connected' : 'Not connected';
+    }
 }
 
 /**
@@ -36,9 +55,22 @@ function setStatus(name, on) {
  * to learn its name. Deliberately not persisted: a launch should always open on Status, because that is where
  * you act when something failed to connect.
  */
+/*
+ * The lists each pane shows come from the account, so they are re-read when the pane is opened — the startup read
+ * can happen before this machine has finished connecting, answer empty, and (before this) stay empty all session:
+ * "No templates yet" with three templates on the website.
+ */
+const PANE_REFRESH = {
+    templates: () => refreshTemplates(),
+    overlays: () => refreshOverlays(),
+    dashboards: () => refreshDashboards(),
+    status: () => refreshPlatforms(),
+};
+
 function showPane(name) {
     const pane = el(`pane-${name}`);
     if (!pane) return;
+    if (PANE_REFRESH[name]) PANE_REFRESH[name]();
     document.querySelectorAll('.pane').forEach((node) => {
         node.classList.toggle('is-active', node === pane);
     });
@@ -102,6 +134,8 @@ function applyUpdateStatus(status) {
     }
 }
 
+let wasConnected = false;
+
 function applyState(state) {
     if (!state) return;
     if (state.settings) {
@@ -115,9 +149,19 @@ function applyState(state) {
         el('forward-events').checked = state.settings.forwardObsEvents !== false;
         el('auto-connect').checked = state.settings.autoConnectObs !== false;
     }
+    // Coming online is when the account's lists first become readable, so read them then too.
+    if (state.lbcbotConnected && !wasConnected) refreshAccountLists();
+    wasConnected = !!state.lbcbotConnected;
     setStatus('lbc', state.lbcbotConnected);
     setStatus('obs', state.obsConnected);
     if (state.lbcbotConnected) el('device-code').textContent = '';
+}
+
+function refreshAccountLists() {
+    refreshOverlays();
+    refreshDashboards();
+    refreshPlatforms();
+    refreshTemplates();
 }
 
 async function refreshOverlays() {
@@ -164,7 +208,7 @@ async function refreshOverlays() {
         size.textContent = `${overlay.canvasWidth || 1920}×${overlay.canvasHeight || 1080}`;
 
         const button = document.createElement('button');
-        button.className = 'primary';
+        // A row action, so the quiet outline — the one filled button per surface is reserved for the main action.
         button.textContent = 'Add to OBS';
         button.addEventListener('click', async () => {
             button.disabled = true;
@@ -248,6 +292,7 @@ async function refreshPlatforms() {
     }
     const linked = data.connectedPlatforms || [];
     const login = (data.loginPlatform || '').toUpperCase();
+    linkedPlatforms = ['TWITCH', 'YOUTUBE'].filter((key) => linked.includes(key));
     [['twitch', 'TWITCH'], ['youtube', 'YOUTUBE']].forEach(([id, key]) => {
         const connected = linked.includes(key);
         // The login platform cannot be unlinked without losing the way you sign in, so say so rather than
@@ -255,6 +300,9 @@ async function refreshPlatforms() {
         const note = connected ? (key === login ? 'Connected — sign-in account' : 'Connected') : 'Not connected';
         show(id, connected, note);
     });
+    // The template editor's platform choice and the list's platform tags depend on what is linked.
+    renderTemplateList();
+    if (!selectedTemplateId) showPlatformFields(editorPlatform(null), true);
 }
 
 /* ------------------------------------------------------------------ stream templates */
@@ -282,6 +330,28 @@ const YT_CATEGORIES = [
 let templates = [];
 /** The template being edited; null means the editor holds an unsaved new one. */
 let selectedTemplateId = null;
+/**
+ * One platform per template, as on the website: the editor shows only that platform's fields. A new template's
+ * platform is picked in the editor (only offered when both are linked); an existing one keeps its own.
+ */
+let linkedPlatforms = [];
+let newTemplatePlatform = null;
+const PLATFORM_LABELS = { TWITCH: 'Twitch', YOUTUBE: 'YouTube' };
+
+function editorPlatform(template) {
+    if (template && template.platform) return template.platform;
+    if (newTemplatePlatform && linkedPlatforms.includes(newTemplatePlatform)) return newTemplatePlatform;
+    return linkedPlatforms[0] || 'TWITCH';
+}
+
+function showPlatformFields(platform, isNew) {
+    el('tpl-twitch').hidden = platform !== 'TWITCH';
+    el('tpl-youtube').hidden = platform !== 'YOUTUBE';
+    el('tpl-platform-row').hidden = !(isNew && linkedPlatforms.length > 1);
+    document.querySelectorAll('#tpl-platform button').forEach((b) => {
+        b.classList.toggle('is-active', b.dataset.platform === platform);
+    });
+}
 
 function setTemplateStatus(message) {
     el('template-status').textContent = message || '';
@@ -293,8 +363,10 @@ function readTemplateForm() {
         const raw = el(id).value.trim();
         return raw === '' ? null : raw;
     };
+    const current = templates.find((t) => t.streamTemplateId === selectedTemplateId);
     return {
         name: value('template-name') || 'Untitled',
+        platform: editorPlatform(current),
         twitchTitle: value('tw-title'),
         twitchCategory: value('tw-category'),
         // Only meaningful while it matches the typed name — see onCategoryInput.
@@ -325,6 +397,7 @@ function fillTemplateForm(template) {
     el('yt-language').value = t.youtubeLanguage || '';
     el('yt-synthetic').checked = Boolean(t.youtubeSyntheticMedia);
     el('template-editor-title').textContent = t.streamTemplateId ? (t.name || 'Template') : 'New template';
+    showPlatformFields(editorPlatform(template), !t.streamTemplateId);
     // Apply and Delete are meaningless until the thing exists server-side.
     el('template-apply').disabled = !t.streamTemplateId;
     el('template-delete').disabled = !t.streamTemplateId;
@@ -354,6 +427,13 @@ function renderTemplateList() {
         button.type = 'button';
         button.className = `template-row${t.streamTemplateId === selectedTemplateId ? ' is-active' : ''}`;
         button.textContent = t.name || `Template ${t.streamTemplateId}`;
+        // With both platforms linked, each row says which one it is for; with one, that would be noise.
+        if (linkedPlatforms.length > 1 && t.platform) {
+            const tag = document.createElement('span');
+            tag.className = `tag tag--${t.platform.toLowerCase()}`;
+            tag.textContent = PLATFORM_LABELS[t.platform] || t.platform;
+            button.appendChild(tag);
+        }
         button.addEventListener('click', () => selectTemplate(t.streamTemplateId));
         li.appendChild(button);
         list.appendChild(li);
@@ -419,6 +499,13 @@ function wireTemplates() {
     });
 
     el('tw-category').addEventListener('input', onCategoryInput);
+
+    document.querySelectorAll('#tpl-platform button').forEach((b) => {
+        b.addEventListener('click', () => {
+            newTemplatePlatform = b.dataset.platform;
+            showPlatformFields(newTemplatePlatform, true);
+        });
+    });
 
     el('template-new').addEventListener('click', () => {
         selectedTemplateId = null;
@@ -498,9 +585,18 @@ function wire() {
     el('refresh-overlays').addEventListener('click', refreshOverlays);
 
     el('refresh-dashboards').addEventListener('click', refreshDashboards);
-    el('open-dashboard').addEventListener('click', () => {
+    el('open-dashboard').addEventListener('click', async () => {
         // An empty value means "no specific dashboard" — the main process then loads the picker page instead.
-        window.lbcbot.openDashboard(el('dashboard-select').value || null);
+        el('dashboard-status').textContent = '';
+        const result = await window.lbcbot.openDashboard(el('dashboard-select').value || null);
+        /*
+         * The result used to be discarded, so a refusal looked like a dead button. The main process declines
+         * to open a dashboard it cannot sign in — otherwise the window lands on the public landing page and
+         * the app looks broken — so this is where that reason has to appear.
+         */
+        if (result && result.ok === false) {
+            el('dashboard-status').textContent = result.error || 'Could not open that dashboard.';
+        }
     });
 
     const persist = () => window.lbcbot.updateSettings({

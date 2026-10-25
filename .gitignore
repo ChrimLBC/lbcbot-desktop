@@ -3,3 +3,6 @@ dist/
 out/
 *.log
 .DS_Store
+
+# Playwright MCP scratch output (snapshots, console logs) — may contain session data
+.playwright-mcp/

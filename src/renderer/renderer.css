@@ -1,12 +1,22 @@
+/*
+ * The website's design tokens (LBCBot-frontend scss/tokens.scss), so the app reads as the same product as the
+ * dashboards it opens. Decided 2026-10-24: one TEAL accent; teal is light, so ink on an accent fill is dark.
+ */
 :root {
-    --bg: #15161a;
-    --card: #1e2027;
-    --line: #2b2e37;
-    --ink: #e6e7ea;
-    --muted: #8d93a1;
-    --brand: #5a2ca0;
-    --on: #5bc98b;
-    --off: #6b7280;
+    --bg: #121212;
+    --card: linear-gradient(160deg, #1b1f2e, #12141d);
+    --line: rgba(255, 255, 255, 0.08);
+    --ink: #e7e9f0;
+    --muted: #9aa3bd;
+    --faint: #6f7896;
+    --accent: #19c3d6;
+    --accent-rgb: 25, 195, 214;
+    --on-accent: #041a1d;
+    --brand: var(--accent);
+    --raised: rgba(54, 53, 53, 0.576);
+    --on: #34d399;
+    --off: #6f7896;
+    --bad: #f87171;
 }
 
 * { box-sizing: border-box; }
@@ -321,3 +331,197 @@ button.primary:hover:not(:disabled) { background: #6c37bd; }
 .platform__name { flex: 0 0 auto; font-size: 13px; }
 .platform__state { flex: 1 1 auto; text-align: right; color: var(--muted); font-size: 12px; }
 .platform__state--on { color: var(--on); }
+
+/*
+ * Connection state on the card that acts on it (Status -> LBCBot), beside the heading.
+ *
+ * Muted and small: it answers "am I connected?" without competing with the Connect button for attention.
+ */
+.conn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin-left: auto;
+    font-size: 12px;
+    color: var(--muted);
+    white-space: nowrap;
+}
+
+
+/* =====================================================================================================================
+   2026-10-24 — match the website. Everything below restates components in the web app's terms: the sidebar's tinted
+   active item with a teal bar, the page header's gradient icon tile, the flat no-border inputs, outline buttons with
+   one filled teal primary, and real switches for on/off settings.
+   ===================================================================================================================== */
+
+[hidden] { display: none !important; }
+
+.nav { background: linear-gradient(180deg, #141726 0%, #0e1018 100%); border-right-color: var(--line); }
+
+.nav__brand { display: flex; align-items: center; gap: 10px; padding: 0 6px; }
+.brand-mark {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    width: 32px;
+    height: 32px;
+    border-radius: 9px;
+    background: linear-gradient(135deg, #19c3d6, #6c5ce7);
+    color: #fff;
+    box-shadow: 0 3px 10px rgba(var(--accent-rgb), 0.35);
+}
+.brand-mark__icon { width: 16px; height: 16px; }
+
+.nav__item {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 9px 10px;
+    border-radius: 10px;
+    color: #aeb6cc;
+    font-size: 14px;
+}
+.nav__icon { width: 16px; height: 16px; flex: 0 0 auto; opacity: 0.9; }
+.nav__item:hover:not(.is-active) { background: rgba(255, 255, 255, 0.05); color: #fff; }
+.nav__item.is-active {
+    background: linear-gradient(90deg, rgba(25, 195, 214, 0.18), rgba(108, 92, 231, 0.12));
+    color: #fff;
+    font-weight: 600;
+}
+.nav__item.is-active::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 8px;
+    bottom: 8px;
+    width: 3px;
+    border-radius: 0 3px 3px 0;
+    background: var(--accent);
+}
+.nav__item.is-active .nav__icon { color: var(--accent); opacity: 1; }
+
+/* Page header: the website's icon tile + title + one-line subtitle, over a hairline. */
+.pane__head {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    column-gap: 14px;
+    align-items: center;
+    margin-bottom: 18px;
+    padding-bottom: 14px;
+    border-bottom: 1px solid var(--line);
+}
+.pane__mark {
+    grid-row: span 2;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 36px;
+    border-radius: 10px;
+    background: linear-gradient(135deg, #19c3d6, #6c5ce7);
+    color: #fff;
+    box-shadow: 0 3px 10px rgba(var(--accent-rgb), 0.3);
+}
+.pane__mark-icon { width: 17px; height: 17px; }
+.pane__head h2 { font-size: 22px; font-weight: 700; color: #fff; }
+.pane__head .pane__sub { margin: 3px 0 0; }
+
+.card { border-color: var(--line); border-radius: 14px; background: var(--card); padding: 16px 18px; }
+.card__head h3 { font-size: 15px; color: #fff; }
+
+/* Inputs: the website's flat field — raised fill, no border, small radius. */
+.row input[type="text"],
+.row input[type="password"],
+.row select,
+.row textarea {
+    border: 0;
+    border-radius: 3px;
+    background: var(--raised);
+    color: var(--ink);
+}
+.row input:focus-visible,
+.row select:focus-visible,
+.row textarea:focus-visible { outline: 2px solid rgba(var(--accent-rgb), 0.55); outline-offset: 0; }
+
+/* Buttons: quiet outline by default, one filled teal primary per surface (dark ink on teal). */
+button {
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    border-radius: 6px;
+    background: transparent;
+    color: var(--ink);
+}
+button:hover:not(:disabled) {
+    background: rgba(255, 255, 255, 0.06);
+    border-color: rgba(var(--accent-rgb), 0.65);
+    box-shadow: 0 0 0 2px rgba(var(--accent-rgb), 0.2);
+}
+button.primary { border-color: transparent; background: var(--accent); color: var(--on-accent); font-weight: 600; }
+button.primary:hover:not(:disabled) { background: #47d4e3; }
+button:focus-visible { outline: 2px solid rgba(var(--accent-rgb), 0.6); outline-offset: 1px; }
+.nav__item, .template-row { box-shadow: none !important; }
+.nav__item:hover:not(:disabled), .template-row:hover:not(:disabled) { border-color: transparent; }
+
+/* On/off settings are switches, as on the website: the squared "Soft fill" switch (32×16, faint teal fill and a teal
+   knob when on). Disabled fades less than usual because the off state already starts faint. */
+.row input[type="checkbox"] {
+    appearance: none;
+    -webkit-appearance: none;
+    position: relative;
+    flex: 0 0 auto;
+    width: 32px;
+    height: 16px;
+    margin: 0;
+    border-radius: 4px;
+    background: #2c3040;
+    cursor: pointer;
+    transition: background-color 0.15s ease, box-shadow 0.15s ease;
+}
+.row input[type="checkbox"]::after {
+    content: "";
+    position: absolute;
+    top: 3px;
+    left: 3px;
+    width: 10px;
+    height: 10px;
+    border-radius: 2px;
+    background: var(--faint);
+    transition: left 0.15s ease, background-color 0.15s ease;
+}
+.row input[type="checkbox"]:checked {
+    background: rgba(var(--accent-rgb), 0.22);
+    box-shadow: inset 0 0 0 1.5px rgba(var(--accent-rgb), 0.55);
+}
+.row input[type="checkbox"]:checked::after { left: 19px; background: var(--accent); }
+.row input[type="checkbox"]:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.row input[type="checkbox"]:disabled { opacity: 0.65; cursor: not-allowed; }
+
+.template-row.is-active,
+.nav__item.is-active { box-shadow: none; }
+.template-row.is-active { background: rgba(var(--accent-rgb), 0.14); }
+
+/* Segmented choice (a new template's platform): all options visible, the chosen one in the accent. */
+.seg { display: inline-flex; gap: 4px; }
+.seg button { padding: 5px 12px; font-size: 12.5px; }
+.seg button.is-active { background: var(--accent); border-color: transparent; color: var(--on-accent); font-weight: 600; }
+
+/* Which platform a template is for — only shown when both are linked. */
+.tag {
+    margin-left: auto;
+    padding: 1px 7px;
+    border-radius: 999px;
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+}
+.tag--twitch { color: #c4a5ff; background: rgba(145, 70, 255, 0.18); }
+.tag--youtube { color: #ff8a84; background: rgba(255, 78, 69, 0.16); }
+
+.pill--on { background: rgba(52, 211, 153, 0.14); color: var(--on); }
+.dot--on { box-shadow: 0 0 0 3px rgba(52, 211, 153, 0.16); }
+
+@media (prefers-reduced-motion: reduce) {
+    .row input[type="checkbox"], .row input[type="checkbox"]::after { transition: none; }
+}

@@ -1,6 +1,6 @@
 'use strict';
 
-const { app, BrowserWindow, ipcMain, shell, screen, session } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, shell, screen, session, desktopCapturer, systemPreferences } = require('electron');
 const path = require('node:path');
 const store = require('./store');
 const { LbcBot } = require('./lbcbot');
@@ -131,6 +131,227 @@ function applySessionUserAgent() {
     log(`Browser identity: ${DASHBOARD_USER_AGENT}`);
 }
 
+/**
+ * An INVISIBLE call client may never switch on the camera, microphone or screen share. A visible one may.
+ *
+ * <p>Electron grants permission requests by default when no handler is set, so without this a hidden
+ * {@code <webview>} could start capturing with nothing on screen to show it. A blanket refusal is wrong
+ * too: a streamer may legitimately want to talk, listen and share their screen through the call embedded in
+ * the card, and denying media everywhere would quietly make that impossible.
+ *
+ * <p>So the split is by intent, read off the requesting URL. The Stream Together card marks a presence-only
+ * client with {@code lbcbot=presence} (see the web app's `guestStarBridge`), and only that one is refused.
+ * A call the streamer can see keeps its devices.
+ *
+ * <p>Presence itself needs no devices: a real session ran 9+ minutes with the host's audio and video both
+ * reported unavailable, so refusing media costs a presence-only client nothing.
+ *
+ * <p>Everything other than capture keeps Electron's default answer, so a future card wanting clipboard or
+ * notifications is not silently broken.
+ */
+const CAPTURE_PERMISSIONS = new Set(['media', 'audioCapture', 'videoCapture', 'display-capture', 'mediaKeySystem']);
+
+/** Matches the marker the web app appends to a presence-only call client's URL. */
+const PRESENCE_MARKER = /[?&]lbcbot=presence(?:&|$)/;
+
+/** Opens System Settings directly on the Screen Recording list, rather than at its front door. */
+const SCREEN_RECORDING_PANE =
+    'x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture';
+
+/**
+ * Tell the user, in a dialog they cannot miss, that macOS is blocking screen share — and take them there.
+ *
+ * <p><b>Why a dialog and not just a log line.</b> Pressing "Share your screen" previously did nothing
+ * visible: the handler refused and wrote to a console nobody has open. The permission cannot be granted or
+ * even requested in code (see the caller), so the only honest design is to say so at the moment of the
+ * press and make the fix one click away.
+ *
+ * <p><b>Why macOS cannot simply be asked.</b> Verified on macOS 12.7.4 / Electron 43:
+ * `getMediaAccessStatus('screen')` is `CGPreflightScreenCaptureAccess()`, a bool with no "not determined"
+ * state; `askForMediaAccess` covers camera and microphone only; and `desktopCapturer.getSources` throws
+ * "Failed to get sources." rather than prompting — **even with the TCC record cleared via
+ * `tccutil reset ScreenCapture`**, which was tested explicitly. macOS raises its own prompt only when a
+ * capture actually starts, and a capture cannot start without a source, which needs the permission. So a
+ * one-time prompt that has already been answered never returns, and the grant is manual by construction.
+ *
+ * <p>The second button exists because the grant is applied at LAUNCH: enabling it while the app runs changes
+ * nothing until a restart, which is the step people skip and then report the feature as broken.
+ */
+async function offerScreenRecordingAccess() {
+    if (process.platform !== 'darwin') return;
+    /*
+     * Unpackaged, the row macOS lists is Electron's own bundle, not ours — naming the wrong one sends the
+     * user scanning a list that really does contain the entry they need.
+     */
+    const tccName = app.isPackaged ? 'LBCBot' : 'Electron';
+    const parent = BrowserWindow.getFocusedWindow() || undefined;
+    const { response } = await dialog.showMessageBox(parent, {
+        type: 'warning',
+        buttons: ['Open Screen Recording Settings', 'I enabled it — relaunch', 'Cancel'],
+        defaultId: 0,
+        cancelId: 2,
+        message: 'macOS is blocking screen sharing',
+        detail: `To share your screen, macOS needs Screen Recording permission for "${tccName}".\n\n`
+            + `1. Open the settings below and switch on "${tccName}" (use + to add it if it is missing).\n`
+            + '2. Relaunch LBCBot — macOS only applies this permission when the app starts.\n\n'
+            + 'macOS cannot be prompted for this from inside the app, and it only ever asks once, '
+            + 'so this has to be switched on by hand.',
+    });
+    if (response === 0) {
+        shell.openExternal(SCREEN_RECORDING_PANE).catch((error) => {
+            log(`Could not open Screen Recording settings: ${(error && error.message) || error}`);
+        });
+        return;
+    }
+    if (response === 1) {
+        log('Relaunching to pick up the Screen Recording permission.');
+        app.relaunch();
+        app.quit();
+    }
+}
+
+/**
+ * Screen sharing, which does not work in Electron unless the app provides the source itself.
+ *
+ * <p>A page calling `getDisplayMedia()` — Twitch's "Share your screen" in the embedded Stream Together call,
+ * for instance — is refused outright when no handler is registered. There was none, so that button could
+ * never have worked in this app, in the card or anywhere else.
+ *
+ * <p>The choice is the user's, so this shows a chooser rather than granting a screen automatically: handing
+ * a call the whole desktop because someone clicked "share" is how the wrong window ends up on stream.
+ * macOS's own picker (`useSystemPicker`) would be simpler but needs a newer macOS than this app targets.
+ *
+ * <p>Closing the chooser without picking calls back with nothing, which is how Electron spells "denied".
+ */
+let pickerWindow = null;
+let pickerSources = [];
+let pickerResolve = null;
+
+function chooseShareSource(sources) {
+    return new Promise((resolve) => {
+        pickerSources = sources;
+        pickerResolve = resolve;
+        pickerWindow = new BrowserWindow({
+            width: 780,
+            height: 540,
+            title: 'Share your screen',
+            backgroundColor: '#15161a',
+            autoHideMenuBar: true,
+            webPreferences: {
+                preload: path.join(__dirname, '..', 'preload', 'picker.js'),
+                contextIsolation: true,
+                nodeIntegration: false,
+            },
+        });
+        pickerWindow.loadFile(path.join(__dirname, '..', 'renderer', 'picker.html'));
+        pickerWindow.on('closed', () => {
+            pickerWindow = null;
+            // Dismissed without choosing: resolve to nothing so the caller denies rather than hangs.
+            if (pickerResolve) {
+                pickerResolve(null);
+                pickerResolve = null;
+            }
+        });
+    });
+}
+
+function registerPickerIpc() {
+    ipcMain.handle('picker-sources', () => pickerSources.map((source) => ({
+        id: source.id,
+        name: source.name,
+        thumb: source.thumbnail.toDataURL(),
+    })));
+    ipcMain.handle('picker-choose', (_event, id) => {
+        const chosen = pickerSources.find((source) => source.id === id) || null;
+        if (pickerResolve) {
+            pickerResolve(chosen);
+            pickerResolve = null;
+        }
+        if (pickerWindow && !pickerWindow.isDestroyed()) {
+            pickerWindow.close();
+        }
+        return true;
+    });
+}
+
+function applyPermissionPolicy() {
+    const s = session.fromPartition(DASHBOARD_PARTITION);
+    const presenceOnly = (contents, details) => {
+        const url = (details && details.requestingUrl) || (contents && !contents.isDestroyed() && contents.getURL()) || '';
+        return PRESENCE_MARKER.test(url);
+    };
+    s.setPermissionRequestHandler((contents, permission, callback, details) => {
+        if (CAPTURE_PERMISSIONS.has(permission) && presenceOnly(contents, details)) {
+            log(`Denied ${permission}: presence-only call client has no devices by design`);
+            callback(false);
+            return;
+        }
+        callback(true);
+    });
+    // The request handler covers prompts; this covers the synchronous checks a page makes before asking.
+    s.setPermissionCheckHandler((contents, permission, _origin, details) => !(
+        CAPTURE_PERMISSIONS.has(permission) && presenceOnly(contents, details)
+    ));
+
+    s.setDisplayMediaRequestHandler(async (request, callback) => {
+        const url = (request && request.frame && request.frame.url) || '';
+        if (PRESENCE_MARKER.test(url)) {
+            log('Denied screen share: presence-only call client has no devices by design');
+            callback();
+            return;
+        }
+        try {
+            /*
+             * macOS gates screen capture behind a SYSTEM permission that nothing in this app can grant,
+             * and — unlike camera and microphone — nothing in this app can even ASK for.
+             *
+             * `getMediaAccessStatus('screen')` is backed by `CGPreflightScreenCaptureAccess()`, a bool, so
+             * on macOS it only ever answers 'granted' or 'denied': there is no 'not-determined' to fall
+             * through on, and `askForMediaAccess` covers camera/microphone only. Verified on macOS 12.7.4 /
+             * Electron 43: with status 'denied', `getSources` does NOT raise the system prompt, it throws
+             * "Failed to get sources." So there is no programmatic path to the grant at all — the user has
+             * to add the app in System Settings by hand. Short-circuit and say so precisely.
+             */
+            const screenAccess = process.platform === 'darwin'
+                ? systemPreferences.getMediaAccessStatus('screen')
+                : 'granted';
+            if (screenAccess !== 'granted') {
+                log(`Screen share is blocked (screen access is "${screenAccess}").`);
+                await offerScreenRecordingAccess();
+                callback();
+                return;
+            }
+            const sources = await desktopCapturer.getSources({
+                types: ['screen', 'window'],
+                thumbnailSize: { width: 320, height: 180 },
+            });
+            if (!sources.length) {
+                /*
+                 * Preflight said granted, yet there is nothing to capture — on macOS that almost always
+                 * means the permission was switched on while this process was already running, and the
+                 * grant only takes effect at launch. Same dialog: its second button is the relaunch.
+                 */
+                log('Nothing to share — Screen Recording was most likely granted after launch.');
+                await offerScreenRecordingAccess();
+                callback();
+                return;
+            }
+            const chosen = await chooseShareSource(sources);
+            if (!chosen) {
+                log('Screen share cancelled.');
+                callback();
+                return;
+            }
+            log(`Sharing "${chosen.name}".`);
+            callback({ video: chosen });
+        } catch (error) {
+            // Not every rejection here is an Error; Electron can reject with a bare string.
+            log(`Screen share failed: ${(error && error.message) || String(error)}`);
+            callback();
+        }
+    });
+}
+
 /** Open dashboard windows, keyed by dashboardId (the string '' stands for the no-id picker window). */
 const dashboardWindows = new Map();
 
@@ -213,13 +434,43 @@ const windowOpenPolicy = ({ url: target }) => {
         openTwitchSignIn();
         return { action: 'deny' };
     }
-    if (/^https:\/\/([a-z0-9-]+\.)*twitch\.tv\//i.test(target || '')) {
+    if (/^https:\/\/([a-z0-9-]+\.)*twitch\.tv(\/|$)/i.test(target || '')) {
         openTwitchWindow(target);
         return { action: 'deny' };
     }
     if (/^https?:\/\//i.test(target || '')) {
         shell.openExternal(target);
+        return { action: 'deny' };
     }
+    /*
+     * A popup with no destination yet — `window.open()`, `window.open('')`, `window.open('about:blank')` —
+     * which the opener then navigates or writes into itself. Denying one is INVISIBLE: the opener gets `null`
+     * back from window.open and, if it does not check, simply does nothing. That is indistinguishable from a
+     * dead button, and it is the shape Twitch's backstage uses for some of its panels.
+     *
+     * Allowed, because a blank popup carries nothing to vet: it can only ever be driven by the page that
+     * opened it, and every page that can reach this handler is already one we host. It inherits the dashboard
+     * partition for the same reason the auth popups do — a signed-out window here reads as a broken embed.
+     */
+    if (!host) {
+        return {
+            action: 'allow',
+            overrideBrowserWindowOptions: {
+                width: 1100,
+                height: 820,
+                backgroundColor: '#0e0e10',
+                autoHideMenuBar: true,
+                webPreferences: {
+                    partition: DASHBOARD_PARTITION,
+                    contextIsolation: true,
+                    nodeIntegration: false,
+                },
+            },
+        };
+    }
+    // Reached only by a non-http(s) scheme we do not handle. Logged because a silently-dropped window open is
+    // otherwise unobservable from inside the app, and "I clicked it and nothing happened" is the only symptom.
+    log(`Blocked window open: ${target}`);
     return { action: 'deny' };
 };
 
@@ -289,7 +540,7 @@ function usableBounds(saved) {
  *       but Twitch's backstage is the whole point of being here and must stay on this logged-in partition.</li>
  * </ul>
  */
-function openDashboardWindow(dashboardId) {
+async function openDashboardWindow(dashboardId) {
     const key = dashboardId == null ? '' : String(dashboardId);
     const existing = dashboardWindows.get(key);
     if (existing && !existing.isDestroyed()) {
@@ -301,6 +552,26 @@ function openDashboardWindow(dashboardId) {
     const site = (store.settings().siteUrl || '').replace(/\/+$/, '');
     if (!site) {
         return { ok: false, error: 'No site URL configured.' };
+    }
+
+    /*
+     * Refuse to open a dashboard this app cannot sign in.
+     *
+     * The window seeds this machine's credential into the page so it logs itself in. With no usable
+     * credential the page falls through to the PUBLIC LANDING PAGE — a marketing page with a "Connect with
+     * Twitch" button, inside a frameless window, which reads as the app being broken. Better to say what is
+     * wrong where the user can fix it.
+     *
+     * Presence of a credential is not the test, and that distinction is the whole point: a credential minted
+     * against a different API is present and useless (exactly what happens when `apiUrl` is switched). So
+     * this asks for a TOKEN, which is the only thing that proves the credential is accepted by the API this
+     * app is pointed at.
+     */
+    if (!store.hasCredential()) {
+        return { ok: false, error: 'Connect this app to LBCBot first — see the Status pane.' };
+    }
+    if (!await lbcbot.token()) {
+        return { ok: false, error: 'LBCBot would not accept this machine\'s credential. Reconnect in the Status pane.' };
     }
 
     const saved = usableBounds(store.dashboardWindow(key));
@@ -334,6 +605,31 @@ function openDashboardWindow(dashboardId) {
     // on this webContents too because the session value does not reach one already under construction.
     win.webContents.setUserAgent(DASHBOARD_USER_AGENT);
     win.loadURL(url);
+
+    /*
+     * Recover a dashboard whose page cannot recover itself.
+     *
+     * The page heals its own cards, socket and session after a sleep, but only while it is running. If its
+     * renderer dies (killed across a sleep, out of memory, a crash) the window is blank and nothing in it can
+     * notice; if a load fails (offline at launch, or at a reload) it sits on Chromium's error page. Either way,
+     * load it again: it signs itself back in from the credential and rebuilds every card. A renderer that keeps
+     * dying is retried slowly, so a page that crashes on load cannot spin.
+     */
+    let lastCrashReload = 0;
+    win.webContents.on('render-process-gone', (_event, details) => {
+        const reason = (details && details.reason) || 'unknown';
+        log(`Dashboard renderer gone (${reason}) — reloading.`);
+        if (win.isDestroyed() || reason === 'clean-exit') return;
+        const wait = Date.now() - lastCrashReload < 60000 ? 15000 : 1000;
+        lastCrashReload = Date.now();
+        setTimeout(() => { if (!win.isDestroyed()) win.webContents.reload(); }, wait);
+    });
+    win.webContents.on('did-fail-load', (_event, code, description, failedUrl, isMainFrame) => {
+        // -3 is ABORTED: one navigation superseding another, not a failure.
+        if (!isMainFrame || code === -3) return;
+        log(`Dashboard failed to load (${description || code}) — retrying in 10s.`);
+        setTimeout(() => { if (!win.isDestroyed()) win.loadURL(failedUrl || url); }, 10000);
+    });
 
     win.webContents.setWindowOpenHandler(windowOpenPolicy);
     win.webContents.on('did-create-window', (child) => adoptChildWindow(child.webContents));
@@ -853,6 +1149,9 @@ app.whenReady().then(async () => {
     // Before any window on the dashboard partition exists — a session UA does not reach WebContents that already
     // do. See applySessionUserAgent.
     applySessionUserAgent();
+    // Same timing requirement, same reason: a handler set after a WebContents exists does not govern it.
+    applyPermissionPolicy();
+    registerPickerIpc();
     watchTwitchSessionCookie();
     createWindow();
     updater.start();
@@ -875,9 +1174,20 @@ app.whenReady().then(async () => {
      * windows appearing — they load the hosted site with their own session and do not depend on either.
      */
     const reopen = store.dashboardsToReopen();
-    reopen.forEach((id) => openDashboardWindow(id === '' ? null : id));
     if (reopen.length) {
-        log(`Reopened ${reopen.length} dashboard window${reopen.length === 1 ? '' : 's'}.`);
+        /*
+         * Now awaited, where it used to be fire-and-forget. The note above about not delaying the windows
+         * still holds in spirit, but a window that opens instantly onto a login page is worse than one that
+         * waits for the token exchange — and when the credential is not accepted, not opening at all beats
+         * reopening the whole layout onto landing pages.
+         */
+        const opened = await Promise.all(reopen.map((id) => openDashboardWindow(id === '' ? null : id)));
+        const failed = opened.find((r) => r && r.ok === false);
+        if (failed) {
+            log(`Did not reopen dashboards: ${failed.error}`);
+        } else {
+            log(`Reopened ${reopen.length} dashboard window${reopen.length === 1 ? '' : 's'}.`);
+        }
     }
 
     app.on('activate', () => {
