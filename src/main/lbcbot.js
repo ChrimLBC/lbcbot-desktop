@@ -155,8 +155,10 @@ class LbcBot {
     /**
      * Subscribe to `/topic/deviceControl/{userId}` to receive the OBS actions attached to triggers.
      *
-     * SockJS + STOMP, the same stack the browser overlays use — the proxy exposes only a SockJS endpoint, so a raw
-     * WebSocket would mean hand-rolling SockJS framing on top of STOMP. `sockjs-client` works unchanged in Node.
+     * STOMP over a plain WebSocket — kafka-ws-proxy's /ws/lbcbot/websocket, the endpoint the web app uses too —
+     * through Node's built-in WebSocket (Electron 43 bundles Node 24, which has one). It replaced sockjs-client, the
+     * proxy's last SockJS client. @stomp/stompjs asks for the v1x.stomp subprotocols; the proxy selects one, without
+     * which Node's WebSocket (like a browser) refuses the handshake.
      *
      * The subscription authorization rule is that the destination's last path segment must equal the JWT subject, so
      * `userId` here must be the one the token exchange reported, not anything the user typed.
@@ -169,19 +171,17 @@ class LbcBot {
         }
         this.stopDeviceControl();
 
-        // Required lazily: sockjs-client touches browser globals at import time in some builds, so it must not be
-        // loaded until a connection is actually wanted.
-        const SockJS = require('sockjs-client');
         const { Client } = require('@stomp/stompjs');
 
-        const wsUrl = `${this.baseUrl()}/ws/lbcbot`;
         const client = new Client({
-            webSocketFactory: () => new SockJS(wsUrl, null, { transports: ['websocket', 'xhr-polling'] }),
+            brokerURL: `${this.baseUrl().replace(/\/+$/, '').replace(/^http/, 'ws')}/ws/lbcbot/websocket`,
             connectHeaders: { Authorization: `Bearer ${token}` },
-            // Match the proxy's 10s/10s broker heartbeats. Mismatched values make Spring negotiate 0,0 — no
-            // heartbeats at all — and a silently dead connection then looks subscribed forever.
+            // Match the proxy's 10s/10s heartbeats, so a silently dead connection surfaces in seconds rather than
+            // looking subscribed forever. Main-process timers are Node's, not throttled like a hidden window's.
             heartbeatIncoming: 10000,
             heartbeatOutgoing: 10000,
+            // A missed heartbeat drops the socket at once rather than waiting on a close a dead peer never answers.
+            discardWebsocketOnCommFailure: true,
             reconnectDelay: 5000,
             debug: () => {},
         });

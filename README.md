@@ -24,8 +24,8 @@ C++/OpenGL.
 cooldown matters here, because flipping between two scenes would otherwise fire an alert per flip.
 
 **LBCBot → OBS** — the OBS action attached to a trigger is executed here. Subscribes to
-`/topic/deviceControl/{userId}` over SockJS+STOMP (the same stack the browser overlays use; `sockjs-client` works
-unchanged in Node). Supported actions:
+`/topic/deviceControl/{userId}` over STOMP on a plain WebSocket (`wss://…/ws/lbcbot/websocket`, the endpoint the
+browser overlays use; Node's built-in WebSocket, `@stomp/stompjs`). Supported actions:
 
 | Action | obs-websocket call |
 |---|---|

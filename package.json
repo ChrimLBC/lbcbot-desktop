@@ -19,8 +19,7 @@
   "dependencies": {
     "@stomp/stompjs": "^7.3.0",
     "electron-updater": "^6.3.9",
-    "obs-websocket-js": "^5.0.8",
-    "sockjs-client": "^1.6.1"
+    "obs-websocket-js": "^5.0.8"
   },
   "devDependencies": {
     "electron": "^43.0.0",
