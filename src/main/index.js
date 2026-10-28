@@ -21,6 +21,10 @@ let obs = null;
 let updater = null;
 
 /** Bounded in-memory log; the renderer renders it and it is the only place a user sees what the bridge is doing. */
+// The LBCBot helmet, the same mark as the website's logo and tab icon. Every window passes it so the title bar and
+// taskbar show it in a dev run too; a packaged build also stamps it into the .exe and shortcuts (build/icon.png).
+const APP_ICON = path.join(__dirname, '..', 'assets', 'icon.png');
+
 const LOG_LIMIT = 300;
 const logLines = [];
 
@@ -42,6 +46,7 @@ function send(channel, payload) {
 
 function createWindow() {
     mainWindow = new BrowserWindow({
+        icon: APP_ICON,
         width: 960,
         height: 700,
         // The sidebar is a fixed 200px, so below this the content column gets uncomfortably narrow and the
@@ -232,6 +237,7 @@ function chooseShareSource(sources) {
         pickerSources = sources;
         pickerResolve = resolve;
         pickerWindow = new BrowserWindow({
+            icon: APP_ICON,
             width: 780,
             height: 540,
             title: 'Share your screen',
@@ -576,6 +582,7 @@ async function openDashboardWindow(dashboardId) {
 
     const saved = usableBounds(store.dashboardWindow(key));
     const win = new BrowserWindow({
+        icon: APP_ICON,
         ...(saved
             ? { x: saved.x, y: saved.y, width: saved.width, height: saved.height }
             : { width: 1440, height: 900 }),
@@ -702,6 +709,7 @@ function openTwitchWindow(target) {
         return { ok: true, reused: true };
     }
     twitchWindow = new BrowserWindow({
+        icon: APP_ICON,
         width: 1280,
         height: 860,
         title: 'Twitch',
