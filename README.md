@@ -102,6 +102,14 @@ updates work, and getting it wrong is silent. v1.0.1 was tagged without bumping 
 app that still called itself 1.0.0; every installed copy compared 1.0.0 to 1.0.0, decided it was current, and the
 release reached nobody while the release page looked perfectly healthy.
 
+**The tag must start with `v`.** The workflow only fires on `v*` tags, so `1.0.9` and `1.0.10` (pushed without the
+`v`) built nothing in CI — they were built and uploaded from the Mac by hand. Use `v1.0.11`, never `1.0.11`.
+
+**Release from CI, not from the Mac.** `npm run dist:win` works on macOS, but electron-builder can only produce the
+NSIS uninstaller there through a workaround (it extracts it from the installer rather than running it), and the
+uninstaller is the one piece that runs on the *next* update — an update first runs the installed version's
+uninstaller. The Windows runner builds it natively. A Windows run takes about two minutes, billed at 2x.
+
 **Three files make a release, not one.** `electron-builder` writes `latest.yml` beside the installer, and that
 file — version, filename, sha512 — is the only thing an installed copy reads to discover a new version exists.
 The `.blockmap` lets the updater fetch just the changed chunks. Publishing only the `.exe` produces releases that
