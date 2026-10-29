@@ -61,42 +61,76 @@ function write() {
 }
 
 /**
+ * The two secrets, decrypted once at startup (`load`) and kept in memory: safeStorage's synchronous methods are
+ * deprecated in Electron 45 and gone in 46, while a dashboard window asks for the credential over a synchronous IPC. A
+ * write updates the memory copy at once and persists the encrypted form when the keychain answers.
+ */
+const SECRETS = ['credential', 'obsPassword'];
+const secrets = { credential: null, obsPassword: null };
+
+/**
  * Encrypt a secret for storage. Falls back to plaintext with a loud warning when the OS has no usable keychain
  * (headless Linux, mainly) — failing closed there would make the app unusable for a reason the user cannot fix,
  * but it must never be silent.
  */
-function encrypt(value) {
+async function encrypt(value) {
     if (!value) {
         return null;
     }
-    if (!safeStorage.isEncryptionAvailable()) {
+    if (!(await safeStorage.isAsyncEncryptionAvailable())) {
         console.warn('[store] OS encryption unavailable — storing secret in PLAINTEXT');
         return { plaintext: value };
     }
-    return { encrypted: safeStorage.encryptString(value).toString('base64') };
+    return { encrypted: (await safeStorage.encryptStringAsync(value)).toString('base64') };
 }
 
-function decrypt(stored) {
+/** The stored secret's text, and whether the keychain asks for it to be encrypted again. */
+async function decrypt(stored) {
     if (!stored) {
-        return null;
+        return { value: null };
     }
     if (stored.plaintext) {
-        return stored.plaintext;
+        return { value: stored.plaintext };
     }
     if (!stored.encrypted) {
-        return null;
+        return { value: null };
     }
     try {
-        return safeStorage.decryptString(Buffer.from(stored.encrypted, 'base64'));
+        const { result, shouldReEncrypt } = await safeStorage.decryptStringAsync(Buffer.from(stored.encrypted, 'base64'));
+        return { value: result, shouldReEncrypt };
     } catch (error) {
         // A keychain that cannot decrypt its own blob means the user's keychain or OS account changed. Treat it as
         // "not connected" so the UI offers a reconnect, rather than retrying a secret that will never decrypt.
         console.warn('[store] could not decrypt a stored secret — treating as absent');
-        return null;
+        return { value: null };
+    }
+}
+
+/** Set a secret: in memory now, encrypted on disk once the keychain answers. Resolves when it is persisted. */
+async function setSecret(name, value) {
+    read();
+    secrets[name] = value || null;
+    const encrypted = await encrypt(secrets[name]);
+    // A later set may have landed while this one was encrypting; only the newest value is written.
+    if (secrets[name] === (value || null)) {
+        cache[name] = encrypted;
+        write();
     }
 }
 
 module.exports = {
+    /** Decrypt the stored secrets into memory. Await once, after app ready and before anything reads one. */
+    async load() {
+        const stored = read();
+        for (const name of SECRETS) {
+            const { value, shouldReEncrypt } = await decrypt(stored[name]);
+            secrets[name] = value;
+            if (shouldReEncrypt) {
+                await setSecret(name, value);
+            }
+        }
+    },
+
     settings() {
         const { credential, obsPassword, ...rest } = read();
         return rest;
@@ -133,26 +167,22 @@ module.exports = {
     },
 
     getCredential() {
-        return decrypt(read().credential);
+        return secrets.credential;
     },
 
     setCredential(value) {
-        read();
-        cache.credential = encrypt(value);
-        write();
+        return setSecret('credential', value);
     },
 
     getObsPassword() {
-        return decrypt(read().obsPassword);
+        return secrets.obsPassword;
     },
 
     setObsPassword(value) {
-        read();
-        cache.obsPassword = encrypt(value);
-        write();
+        return setSecret('obsPassword', value);
     },
 
     hasCredential() {
-        return Boolean(decrypt(read().credential));
+        return Boolean(secrets.credential);
     },
 };

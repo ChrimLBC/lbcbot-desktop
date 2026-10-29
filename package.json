@@ -18,12 +18,12 @@
   "license": "UNLICENSED",
   "dependencies": {
     "@stomp/stompjs": "^7.3.0",
-    "electron-updater": "^6.3.9",
+    "electron-updater": "^6.8.11",
     "obs-websocket-js": "^5.0.8"
   },
   "devDependencies": {
-    "electron": "^43.0.0",
-    "electron-builder": "^26.15.3"
+    "electron": "^45.1.0",
+    "electron-builder": "^26.18.0"
   },
   "build": {
     "appId": "com.lbcbot.desktop",

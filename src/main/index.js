@@ -1152,6 +1152,8 @@ function registerIpc() {
 }
 
 app.whenReady().then(async () => {
+    // The keychain only answers once the app is ready, and every credential read below is served from what this loads.
+    await store.load();
     buildServices();
     registerIpc();
     // Before any window on the dashboard partition exists — a session UA does not reach WebContents that already
