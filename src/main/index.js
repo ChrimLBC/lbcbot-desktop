@@ -383,7 +383,7 @@ const pathOf = (target) => {
 const EXTERNAL_PATHS = ['/song-player'];
 
 /** Is this host the site (the configured one, or either production host while the old one redirects), so the OAuth callback leg is ours rather than a stray link. */
-const isOurs = (host) => sites.isSiteHost(host, store.settings().siteUrl);
+const isOurs = (host) => sites.isSiteHost(host, store.endpoints().siteUrl);
 
 /**
  * Where a link is allowed to open.
@@ -556,7 +556,7 @@ async function openDashboardWindow(dashboardId) {
         return { ok: true, reused: true };
     }
 
-    const site = (store.settings().siteUrl || '').replace(/\/+$/, '');
+    const site = store.endpoints().siteUrl;
     if (!site) {
         return { ok: false, error: 'No site URL configured.' };
     }
@@ -570,7 +570,7 @@ async function openDashboardWindow(dashboardId) {
      * wrong where the user can fix it.
      *
      * Presence of a credential is not the test, and that distinction is the whole point: a credential minted
-     * against a different API is present and useless (exactly what happens when `apiUrl` is switched). So
+     * against a different API is present and useless (e.g. one minted by a dev build pointed at a local API). So
      * this asks for a TOKEN, which is the only thing that proves the credential is accepted by the API this
      * app is pointed at.
      */
@@ -1061,7 +1061,7 @@ function registerIpc() {
      * the user can see the real address bar.
      */
     ipcMain.handle('open-integrations', async () => {
-        const site = (store.settings().siteUrl || '').replace(/\/+$/, '');
+        const site = store.endpoints().siteUrl;
         if (!site) {
             return { ok: false, error: 'No website URL configured.' };
         }
@@ -1133,7 +1133,7 @@ function registerIpc() {
 
         // Same base64 `data` packing the browser builds, so the component view parses it with no special case.
         const payload = Buffer.from(JSON.stringify({ key: key.data.credential, overlayId })).toString('base64');
-        const siteUrl = (store.settings().siteUrl || sites.DEFAULT_SITE_URL).replace(/\/+$/, '');
+        const siteUrl = store.endpoints().siteUrl;
         const url = `${siteUrl}/component-view?isComponentView=true&componentType=OVERLAY&data=${payload}`;
 
         try {

@@ -68,10 +68,7 @@ Two environment traps, both of which look like the app is broken when it is not:
   Electron start as plain Node — `require('electron')` then returns a path string instead of the API and the app
   dies on `Cannot read properties of undefined (reading 'whenReady')`. Use a normal terminal, or
   `env -u ELECTRON_RUN_AS_NODE npm start`.
-- **Electron is pinned to 43 for macOS 12.** Chromium dropped Monterey, so Electron 44+ needs macOS 13 Ventura
-  and aborts on 12 with `Symbol not found: _objc_claimAutoreleasedReturnValue`. 43 is the last line that runs
-  there; apps built on it still run on newer macOS, so pinning costs no users. Only raise this once the dev
-  machine is on Ventura or later.
+- **Electron is on the 45 line** (macOS 27 dev machine). Chromium dropped old macOS releases, so raise it only after checking the minimum macOS it supports.
 
 ## Dashboards in their own windows
 
@@ -138,4 +135,4 @@ check. There is also no mac build in CI yet — the website's download button is
 - **No global hotkeys.**
 - **No installer distribution yet.** `npm run dist` builds locally, but nothing is signed, notarized or
   published, so there is no download link on the website. macOS will gatekeeper an unsigned `.dmg`.
-- `siteUrl` must match where the frontend is served, or the browser sources it creates will point at the wrong host.
+- **Endpoints are fixed.** A packaged build always uses `https://lbcbot.com` and `https://api.lbcbot.com` (`src/main/sites.js`); there is no setting, and any `apiUrl`/`siteUrl` in an old `settings.json` is ignored and dropped. From source (`npm start`), `LBCBOT_SITE_URL` / `LBCBOT_API_URL` override them for local development.

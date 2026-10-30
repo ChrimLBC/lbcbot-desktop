@@ -28,7 +28,7 @@ class LbcBot {
     }
 
     baseUrl() {
-        return (store.settings().apiUrl || '').replace(/\/+$/, '');
+        return store.endpoints().apiUrl;
     }
 
     async token() {

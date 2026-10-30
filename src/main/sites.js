@@ -5,58 +5,57 @@
  *
  * The site moved from lbcbot.devsoperative.com to lbcbot.com (API: lbcbotapi.devsoperative.com to api.lbcbot.com).
  * The old site host 301-redirects to the new one, so for a while a page on one host navigates to the other, and the
- * app must treat both as "the site". The old API host keeps serving, which is why a customised apiUrl is never touched.
+ * app must treat both as "the site". The old API host keeps serving.
  */
 
 const DEFAULT_SITE_URL = 'https://lbcbot.com';
 const DEFAULT_API_URL = 'https://api.lbcbot.com';
 
-/** The previous defaults. A saved value EXACTLY equal to one of these was never customised and is rewritten. */
-const LEGACY_SITE_URL = 'https://lbcbot.devsoperative.com';
-const LEGACY_API_URL = 'https://lbcbotapi.devsoperative.com';
+/** Hosts that are always "the site": the old one redirects to the new one during the move. */
+const SITE_HOSTS = [new URL(DEFAULT_SITE_URL).host, new URL('https://lbcbot.devsoperative.com').host];
 
-/** Hosts that are "the site" while the old one redirects to the new one. */
-const SITE_HOSTS = [new URL(DEFAULT_SITE_URL).host, new URL(LEGACY_SITE_URL).host];
+const clean = (value) => (typeof value === 'string' ? value.trim().replace(/\/+$/, '') : '');
 
 /**
- * One-time settings migration: swap the old default site/API URL for the new one. Pure and idempotent.
- * Returns `{ settings, changed }`; `settings` is the same object when nothing changed.
+ * The ONE place the site and API endpoints are decided. A packaged build always uses the fixed production
+ * endpoints and ignores the environment and anything saved. From source, LBCBOT_SITE_URL / LBCBOT_API_URL may
+ * override them for local development.
  */
-function migrateSettings(saved) {
-    if (!saved || typeof saved !== 'object') {
+function resolveEndpoints(isPackaged, env = {}) {
+    if (isPackaged) {
+        return { siteUrl: DEFAULT_SITE_URL, apiUrl: DEFAULT_API_URL };
+    }
+    return {
+        siteUrl: clean(env.LBCBOT_SITE_URL) || DEFAULT_SITE_URL,
+        apiUrl: clean(env.LBCBOT_API_URL) || DEFAULT_API_URL,
+    };
+}
+
+/** Drop the retired apiUrl/siteUrl keys from saved settings. Pure; `changed` says whether a rewrite is due. */
+function stripEndpointSettings(saved) {
+    if (!saved || typeof saved !== 'object' || !('apiUrl' in saved || 'siteUrl' in saved)) {
         return { settings: saved, changed: false };
     }
-    const next = { ...saved };
-    let changed = false;
-    if (next.siteUrl === LEGACY_SITE_URL) {
-        next.siteUrl = DEFAULT_SITE_URL;
-        changed = true;
-    }
-    if (next.apiUrl === LEGACY_API_URL) {
-        next.apiUrl = DEFAULT_API_URL;
-        changed = true;
-    }
-    return { settings: changed ? next : saved, changed };
+    const { apiUrl, siteUrl, ...rest } = saved;
+    return { settings: rest, changed: true };
 }
 
 /**
- * Is `host` (as in URL.host) the site? The configured site's host always is; when that is one of the two production
- * hosts, so is the other. A custom site (localhost, a staging box) matches only itself.
+ * Is `host` (as in URL.host) the site? Both production hosts always are, so the old host redirecting to the new one
+ * stays in-app, and so is the host of the resolved site URL (a dev override such as localhost).
  */
-function isSiteHost(host, configuredSiteUrl) {
+function isSiteHost(host, siteUrl) {
     if (!host) {
         return false;
     }
-    let configured = null;
+    if (SITE_HOSTS.includes(host)) {
+        return true;
+    }
     try {
-        configured = new URL(configuredSiteUrl).host;
+        return host === new URL(siteUrl).host;
     } catch {
         return false;
     }
-    if (host === configured) {
-        return true;
-    }
-    return SITE_HOSTS.includes(configured) && SITE_HOSTS.includes(host);
 }
 
-module.exports = { DEFAULT_SITE_URL, DEFAULT_API_URL, LEGACY_SITE_URL, LEGACY_API_URL, SITE_HOSTS, migrateSettings, isSiteHost };
+module.exports = { DEFAULT_SITE_URL, DEFAULT_API_URL, SITE_HOSTS, resolveEndpoints, stripEndpointSettings, isSiteHost };

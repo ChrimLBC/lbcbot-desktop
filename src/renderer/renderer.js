@@ -143,8 +143,6 @@ function applyState(state) {
         const assign = (node, value) => {
             if (document.activeElement !== node) node.value = value ?? '';
         };
-        assign(el('api-url'), state.settings.apiUrl);
-        assign(el('site-url'), state.settings.siteUrl);
         assign(el('obs-url'), state.settings.obsUrl);
         el('forward-events').checked = state.settings.forwardObsEvents !== false;
         el('auto-connect').checked = state.settings.autoConnectObs !== false;
@@ -600,13 +598,11 @@ function wire() {
     });
 
     const persist = () => window.lbcbot.updateSettings({
-        apiUrl: el('api-url').value.trim(),
-        siteUrl: el('site-url').value.trim(),
         obsUrl: el('obs-url').value.trim(),
         forwardObsEvents: el('forward-events').checked,
         autoConnectObs: el('auto-connect').checked,
     });
-    ['api-url', 'site-url', 'obs-url'].forEach((id) => el(id).addEventListener('change', persist));
+    el('obs-url').addEventListener('change', persist);
     ['forward-events', 'auto-connect'].forEach((id) => el(id).addEventListener('change', persist));
 
     el('check-updates').addEventListener('click', async () => {

@@ -21,10 +21,6 @@ const sites = require('./sites');
 const FILE = () => path.join(app.getPath('userData'), 'settings.json');
 
 const DEFAULTS = {
-    apiUrl: sites.DEFAULT_API_URL,
-    // The WEBSITE, not the API — the dashboard window loads a page, and the two live on different hosts in
-    // every environment. Kept separate from apiUrl for that reason rather than derived from it.
-    siteUrl: sites.DEFAULT_SITE_URL,
     obsUrl: 'ws://127.0.0.1:4455',
     autoConnectObs: true,
     forwardObsEvents: true,
@@ -46,10 +42,10 @@ function read() {
         return cache;
     }
     try {
-        const { settings, changed } = sites.migrateSettings(JSON.parse(fs.readFileSync(FILE(), 'utf8')));
+        const { settings, changed } = sites.stripEndpointSettings(JSON.parse(fs.readFileSync(FILE(), 'utf8')));
         cache = { ...DEFAULTS, ...settings };
         if (changed) {
-            write(); // persist the one-time site/API default migration
+            write(); // drop the retired apiUrl/siteUrl keys
         }
     } catch (error) {
         cache = { ...DEFAULTS };
@@ -137,6 +133,11 @@ module.exports = {
         }
     },
 
+    /** The site and API endpoints: fixed when packaged, env-overridable from source. Every reader goes through this. */
+    endpoints() {
+        return sites.resolveEndpoints(app.isPackaged, process.env);
+    },
+
     settings() {
         const { credential, obsPassword, ...rest } = read();
         return rest;
@@ -144,7 +145,7 @@ module.exports = {
 
     update(patch) {
         read();
-        Object.assign(cache, patch);
+        Object.assign(cache, sites.stripEndpointSettings(patch).settings);
         write();
         return module.exports.settings();
     },
