@@ -144,7 +144,7 @@ function applyState(state) {
             if (document.activeElement !== node) node.value = value ?? '';
         };
         assign(el('api-url'), state.settings.apiUrl);
-        assign(el('site-url'), state.settings.siteUrl || 'https://lbcbot.devsoperative.com');
+        assign(el('site-url'), state.settings.siteUrl);
         assign(el('obs-url'), state.settings.obsUrl);
         el('forward-events').checked = state.settings.forwardObsEvents !== false;
         el('auto-connect').checked = state.settings.autoConnectObs !== false;

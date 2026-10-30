@@ -3,6 +3,7 @@
 const { app, BrowserWindow, dialog, ipcMain, shell, screen, session, desktopCapturer, systemPreferences } = require('electron');
 const path = require('node:path');
 const store = require('./store');
+const sites = require('./sites');
 const { LbcBot } = require('./lbcbot');
 const { ObsBridge } = require('./obs');
 const { Updater } = require('./updater');
@@ -381,8 +382,8 @@ const pathOf = (target) => {
 /** Our own pages that open in the system browser rather than in-app. Must match routes.SONG_PLAYER in the web app. */
 const EXTERNAL_PATHS = ['/song-player'];
 
-/** The configured site's own host, so the OAuth callback leg is recognised as ours rather than as a stray link. */
-const siteHost = () => hostOf((store.settings().siteUrl || '').replace(/\/+$/, '') || 'about:blank');
+/** Is this host the site (the configured one, or either production host while the old one redirects), so the OAuth callback leg is ours rather than a stray link. */
+const isOurs = (host) => sites.isSiteHost(host, store.settings().siteUrl);
 
 /**
  * Where a link is allowed to open.
@@ -405,7 +406,7 @@ const siteHost = () => hostOf((store.settings().siteUrl || '').replace(/\/+$/, '
  */
 const windowOpenPolicy = ({ url: target }) => {
     const host = hostOf(target || '');
-    const ours = host && host === siteHost();
+    const ours = isOurs(host);
     /*
      * Pages of ours that must NOT run in here: the song player. YouTube serves ads to any plain Chromium, this app
      * included, and the streamer's YouTube Premium login or ad blocker lives in their own browser — which an app
@@ -766,7 +767,7 @@ const TWITCH_LBCBOT_CLIENT_ID = 'si19qnvsuhkwcm97xwoonntwz36bq9';
 const TWITCH_LOGIN_URL = 'https://id.twitch.tv/oauth2/authorize?' + new URLSearchParams({
     client_id: TWITCH_LBCBOT_CLIENT_ID,
     response_type: 'code',
-    redirect_uri: 'https://lbcbot.devsoperative.com/auth',
+    redirect_uri: `${sites.DEFAULT_SITE_URL}/auth`,
     scope: 'user:read:email',
     force_verify: 'true',
     state: 'desktop-backstage-signin',
@@ -1132,7 +1133,7 @@ function registerIpc() {
 
         // Same base64 `data` packing the browser builds, so the component view parses it with no special case.
         const payload = Buffer.from(JSON.stringify({ key: key.data.credential, overlayId })).toString('base64');
-        const siteUrl = (store.settings().siteUrl || 'https://lbcbot.devsoperative.com').replace(/\/+$/, '');
+        const siteUrl = (store.settings().siteUrl || sites.DEFAULT_SITE_URL).replace(/\/+$/, '');
         const url = `${siteUrl}/component-view?isComponentView=true&componentType=OVERLAY&data=${payload}`;
 
         try {

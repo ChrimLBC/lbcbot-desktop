@@ -7,10 +7,11 @@
     "name": "LBCBot",
     "email": "chrisleblanc1432@gmail.com"
   },
-  "homepage": "https://lbcbot.devsoperative.com",
+  "homepage": "https://lbcbot.com",
   "main": "src/main/index.js",
   "scripts": {
     "start": "electron .",
+    "test": "node --test test/",
     "dist": "electron-builder",
     "dist:mac": "electron-builder --mac",
     "dist:win": "electron-builder --win"

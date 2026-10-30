@@ -16,13 +16,15 @@ const path = require('node:path');
  * point of encryption here is the two secrets, not the window size.
  */
 
+const sites = require('./sites');
+
 const FILE = () => path.join(app.getPath('userData'), 'settings.json');
 
 const DEFAULTS = {
-    apiUrl: 'https://lbcbotapi.devsoperative.com',
+    apiUrl: sites.DEFAULT_API_URL,
     // The WEBSITE, not the API — the dashboard window loads a page, and the two live on different hosts in
     // every environment. Kept separate from apiUrl for that reason rather than derived from it.
-    siteUrl: 'https://lbcbot.devsoperative.com',
+    siteUrl: sites.DEFAULT_SITE_URL,
     obsUrl: 'ws://127.0.0.1:4455',
     autoConnectObs: true,
     forwardObsEvents: true,
@@ -44,7 +46,11 @@ function read() {
         return cache;
     }
     try {
-        cache = { ...DEFAULTS, ...JSON.parse(fs.readFileSync(FILE(), 'utf8')) };
+        const { settings, changed } = sites.migrateSettings(JSON.parse(fs.readFileSync(FILE(), 'utf8')));
+        cache = { ...DEFAULTS, ...settings };
+        if (changed) {
+            write(); // persist the one-time site/API default migration
+        }
     } catch (error) {
         cache = { ...DEFAULTS };
     }
