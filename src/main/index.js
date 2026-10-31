@@ -937,20 +937,26 @@ async function pushState() {
 
 function registerIpc() {
     /*
-     * The dashboard preload asking for this machine's credential.
+     * A dashboard window's page asking for a session token (the preload's `lbcbotDesktop.sessionToken`).
      *
-     * Synchronous because the preload has to answer before the page's own scripts run — the page reads the
-     * credential during startup, and an async hand-off would race that and work only sometimes.
+     * The exchange happens here, so the window only ever holds an hour-long token: until 1.0.14 the preload seeded the
+     * machine's credential itself into the page's localStorage, which sits on disk unencrypted in the window's
+     * partition — exactly what credential-stealing malware reads — and undid the OS keychain that guards it here.
      *
-     * The sender is checked against our own dashboard windows even though the remote page cannot reach
-     * `ipcRenderer` (contextIsolation is on and the preload exposes nothing): this channel hands out a full-scope
-     * credential, so it should be unreachable by construction rather than by relying on one setting staying put.
+     * Answered only to our own dashboard windows, and only while they show our own site: a window that has navigated
+     * anywhere else (a sign-in page, a link) gets nothing.
      */
-    ipcMain.on('dashboard-credential', (event) => {
+    ipcMain.handle('dashboard-session', async (event) => {
         const fromDashboard = [...dashboardWindows.values()].some(
             (win) => !win.isDestroyed() && win.webContents.id === event.sender.id,
         );
-        event.returnValue = fromDashboard ? store.getCredential() : null;
+        let onSite = false;
+        try {
+            onSite = isOurs(new URL(event.senderFrame.url).host);
+        } catch (e) {
+            onSite = false;
+        }
+        return fromDashboard && onSite ? lbcbot.session() : null;
     });
 
     ipcMain.handle('get-state', async () => {

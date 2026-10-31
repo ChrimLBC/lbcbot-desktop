@@ -44,6 +44,23 @@ class LbcBot {
         return this.inFlightExchange;
     }
 
+    /**
+     * A dashboard window's session: the current exchanged token, how many seconds it has left, and whose it is. The
+     * window renews by asking again (its page re-asks before the token runs out), so the machine's credential itself
+     * never leaves this process.
+     */
+    async session() {
+        const token = await this.token();
+        if (!token) {
+            return null;
+        }
+        return {
+            accessToken: token,
+            expiresIn: Math.max(60, Math.floor((this.tokenExpiresAt - Date.now()) / 1000)),
+            userId: this.userId,
+        };
+    }
+
     async exchange() {
         const credential = store.getCredential();
         if (!credential) {
