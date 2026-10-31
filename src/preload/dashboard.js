@@ -38,6 +38,10 @@ try {
 }
 
 contextBridge.exposeInMainWorld('lbcbotDesktop', {
-    /** { accessToken, expiresIn, userId } for this machine's account, or null when the app is not connected. */
-    sessionToken: () => ipcRenderer.invoke('dashboard-session'),
+    /**
+     * { accessToken, expiresIn, userId } for this machine's account; null when the app has no usable credential; a
+     * rejection when LBCBot cannot be reached (try again later). `{ fresh: true }` exchanges anew: after the API refused
+     * the token the page holds.
+     */
+    sessionToken: (options) => ipcRenderer.invoke('dashboard-session', !!(options && options.fresh)),
 });

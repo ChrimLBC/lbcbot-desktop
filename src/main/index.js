@@ -385,6 +385,15 @@ const EXTERNAL_PATHS = ['/song-player'];
 /** Is this host the site (the configured one, or either production host while the old one redirects), so the OAuth callback leg is ours rather than a stray link. */
 const isOurs = (host) => sites.isSiteHost(host, store.endpoints().siteUrl);
 
+/** Whether a page's address is our site exactly: its scheme, host and port, so a plain-http copy of it is not. */
+function onOurSite(url) {
+    try {
+        return new URL(url).origin === new URL(store.endpoints().siteUrl).origin;
+    } catch (e) {
+        return false;
+    }
+}
+
 /**
  * Where a link is allowed to open.
  *
@@ -536,8 +545,9 @@ function usableBounds(saved) {
  * <ul>
  *   <li><b>One shared persistent partition.</b> Sign in once and every dashboard window is signed in, across
  *       restarts, isolated from anything else the app does.</li>
- *   <li><b>No preload, and emphatically no nodeIntegration.</b> These windows render a remote page. The app's
- *       own renderer is trusted and holds the IPC bridge; these must not.</li>
+ *   <li><b>A one-function preload, and emphatically no nodeIntegration.</b> These windows render a remote page. The
+ *       app's own renderer is trusted and holds the IPC bridge; these get only `lbcbotDesktop.sessionToken()`
+ *       (preload/dashboard.js), answered for our own site's page alone.</li>
  *   <li><b>`webviewTag` on.</b> This is what lets the Twitch Backstage widget embed Twitch's own backstage,
  *       which `X-Frame-Options: SAMEORIGIN` makes impossible in an ordinary iframe — a `<webview>` is a
  *       separate browsing context, so the header does not apply. It is a real widening of what this window
@@ -564,7 +574,7 @@ async function openDashboardWindow(dashboardId) {
     /*
      * Refuse to open a dashboard this app cannot sign in.
      *
-     * The window seeds this machine's credential into the page so it logs itself in. With no usable
+     * The window's page signs itself in with a token this app exchanges for it. With no usable
      * credential the page falls through to the PUBLIC LANDING PAGE — a marketing page with a "Connect with
      * Twitch" button, inside a frameless window, which reads as the app being broken. Better to say what is
      * wrong where the user can fix it.
@@ -595,8 +605,8 @@ async function openDashboardWindow(dashboardId) {
             contextIsolation: true,
             nodeIntegration: false,
             webviewTag: true,
-            // Seeds this machine's credential into localStorage so the page signs itself in instead of showing a
-            // web login nobody can complete in an embedded window. Exposes NO api surface — see the file.
+            // Lets the page ask this app for a session token, so it signs itself in instead of showing a web login
+            // nobody can complete in an embedded window. One function, nothing else — see the file.
             preload: path.join(__dirname, '..', 'preload', 'dashboard.js'),
         },
     });
@@ -685,7 +695,7 @@ async function openDashboardWindow(dashboardId) {
 }
 
 /**
- * Reload every open dashboard so each re-runs its preload and picks up the current credential.
+ * Reload every open dashboard so each signs in again with the current credential (or shows it has none).
  *
  * Called when the credential CHANGES — connect and disconnect — because a dashboard decides whether it has a
  * session once, during page startup. Without this, connecting leaves every already-open window stranded on the
@@ -946,17 +956,19 @@ function registerIpc() {
      * Answered only to our own dashboard windows, and only while they show our own site: a window that has navigated
      * anywhere else (a sign-in page, a link) gets nothing.
      */
-    ipcMain.handle('dashboard-session', async (event) => {
+    ipcMain.handle('dashboard-session', async (event, fresh) => {
         const fromDashboard = [...dashboardWindows.values()].some(
             (win) => !win.isDestroyed() && win.webContents.id === event.sender.id,
         );
-        let onSite = false;
-        try {
-            onSite = isOurs(new URL(event.senderFrame.url).host);
-        } catch (e) {
-            onSite = false;
+        if (!fromDashboard || !onOurSite(event.senderFrame && event.senderFrame.url)) {
+            return null;
         }
-        return fromDashboard && onSite ? lbcbot.session() : null;
+        const hadCredential = store.hasCredential();
+        const session = await lbcbot.session({ fresh: fresh === true });
+        if (!session && hadCredential && !store.hasCredential()) {
+            pushState(); // the API refused the credential just now: the Status pane says to reconnect
+        }
+        return session;
     });
 
     ipcMain.handle('get-state', async () => {
@@ -997,7 +1009,7 @@ function registerIpc() {
                 log('Connected to LBCBot.');
                 await startDeviceControl();
                 // Any dashboard already open is sitting on the signed-out page, because it was opened before
-                // there was a credential to seed. The preload runs again on reload, so this is what turns
+                // there was a credential to sign in with. Its page asks again on reload, so this is what turns
                 // "connect" into "my dashboards are signed in" without the user closing and reopening them.
                 reloadDashboards();
             } else {
@@ -1158,6 +1170,27 @@ function registerIpc() {
     });
 }
 
+/**
+ * Clear the dashboard partition's page storage once, on the first start of 1.0.14.
+ *
+ * Until then the dashboard preload wrote this machine's credential into the page's localStorage: a plain file in the
+ * partition, readable by anything running as the user, under lbcbot.com and the pre-move site alike (which only
+ * redirects now, so no page there will ever remove it). Clearing the storage of every origin deletes those files. The
+ * windows lose their local view settings once, and sign in again through the app as they always do.
+ */
+async function scrubDashboardStorage() {
+    if (store.settings().dashboardStorageScrubbed) {
+        return;
+    }
+    try {
+        await session.fromPartition(DASHBOARD_PARTITION).clearStorageData({ storages: ['localstorage'] });
+        store.update({ dashboardStorageScrubbed: true });
+        log('Cleared the dashboard windows\' stored data (an older version kept this machine\'s credential there).');
+    } catch (error) {
+        log(`Could not clear the dashboard windows' stored data: ${error.message}`);
+    }
+}
+
 app.whenReady().then(async () => {
     // The keychain only answers once the app is ready, and every credential read below is served from what this loads.
     await store.load();
@@ -1168,6 +1201,8 @@ app.whenReady().then(async () => {
     applySessionUserAgent();
     // Same timing requirement, same reason: a handler set after a WebContents exists does not govern it.
     applyPermissionPolicy();
+    // Before any dashboard window loads, so none reads the storage being cleared.
+    await scrubDashboardStorage();
     registerPickerIpc();
     watchTwitchSessionCookie();
     createWindow();

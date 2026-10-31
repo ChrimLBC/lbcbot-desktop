@@ -47,12 +47,25 @@ class LbcBot {
     /**
      * A dashboard window's session: the current exchanged token, how many seconds it has left, and whose it is. The
      * window renews by asking again (its page re-asks before the token runs out), so the machine's credential itself
-     * never leaves this process.
+     * never leaves this process. `fresh` exchanges anew even while the cached token looks good: the page asks for that
+     * after the API refused it.
+     *
+     * null means no usable credential (never connected, or refused just now): the page shows its sign-in. A failure
+     * to reach the API throws instead, so the page keeps what it has and asks again, as for any blip.
      */
-    async session() {
+    async session({ fresh = false } = {}) {
+        if (!store.getCredential()) {
+            return null;
+        }
+        if (fresh) {
+            this.accessToken = null;
+        }
         const token = await this.token();
         if (!token) {
-            return null;
+            if (!store.getCredential()) {
+                return null; // the exchange was refused: the credential is gone
+            }
+            throw new Error('LBCBot is not answering right now.');
         }
         return {
             accessToken: token,
