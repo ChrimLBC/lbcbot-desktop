@@ -254,11 +254,22 @@ test('an undo re-derives the pace from the splits that remain, without firing', 
     undo.timer.current_segment_index = 2;
     assert.deepEqual(tracker.handle(undo).map((p) => p.eventType), ['GREENSPLIT_SPLIT_UNDONE']);
     assert.equal(tracker.pace, 'ahead');
-    // Undoing back past every split leaves no pace at all.
+    // Undoing back past every split keeps the pace it had: nothing that remains says otherwise.
     const undoAll = { ...clone(SESSION[10]), name: 'split_undone', event: {} };
     Object.assign(undoAll.timer, { current_segment_index: 0, split_times_ns: [null, null, null], real_time_ns: 3e9 });
     tracker.handle(undoAll);
-    assert.equal(tracker.pace, null);
+    assert.equal(tracker.pace, 'ahead');
+});
+
+test('re-doing an undone first split on the same side does not announce the pace again', () => {
+    const tracker = new gs.RunTracker();
+    SESSION.slice(0, 15).forEach((m) => tracker.handle(m)); // run 1 through its first split
+    const first = SESSION.slice(0, 15).reverse().find((m) => m.type === 'event' && m.name === 'split');
+    assert.equal(tracker.pace, 'ahead');
+    const undo = { ...clone(first), name: 'split_undone', event: {} };
+    Object.assign(undo.timer, { current_segment_index: 0, split_times_ns: [null, null, null], real_time_ns: 2e9 });
+    tracker.handle(undo);
+    assert.deepEqual(tracker.handle(clone(first)).map((p) => p.eventType), ['GREENSPLIT_SPLIT', 'GREENSPLIT_GOLD']);
 });
 
 test('undoing a split while live behind stays behind, so the next tick does not announce it twice', () => {

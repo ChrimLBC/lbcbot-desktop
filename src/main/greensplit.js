@@ -392,9 +392,13 @@ class RunTracker {
             case 'comparison_changed':
                 this.pace = null;
                 return [];
-            case 'split_undone':
-                this.pace = derivePace(message.run, message.timer);
+            case 'split_undone': {
+                // Back past every split, the remaining ones say nothing: the pace stays what it was, so re-doing a
+                // mistaken first split on the same side does not announce the same pace again.
+                const derived = derivePace(message.run, message.timer);
+                if (derived !== null) this.pace = derived;
                 return [];
+            }
             case 'split':
             case 'run_finished': {
                 const delta = ns(event.delta_ns);
