@@ -4,7 +4,7 @@ const { shell } = require('electron');
 const store = require('./store');
 
 /**
- * LBCBot API client for the desktop app, plus the STOMP subscription that receives OBS commands.
+ * LBCBot API client for the desktop app, plus the STOMP subscription that receives OBS and GreenSplit commands.
  *
  * Same credential model as the Stream Deck plugin: a long-lived opaque `lbc_dk_...` credential from the
  * device-authorization grant, exchanged at `POST /api/token` for a short-lived JWT. The credential goes in the
@@ -180,10 +180,11 @@ class LbcBot {
         this.stopDeviceControl();
     }
 
-    // ------------------------------------------------------------------ OBS commands in (STOMP)
+    // ------------------------------------------------------------------ device commands in (STOMP)
 
     /**
-     * Subscribe to `/topic/deviceControl/{userId}` to receive the OBS actions attached to triggers.
+     * Subscribe to `/topic/deviceControl/{userId}` to receive the OBS and GreenSplit actions attached to triggers.
+     * Each command's `target` says which (none means OBS); index.js routes them.
      *
      * STOMP over a plain WebSocket — kafka-ws-proxy's /ws/lbcbot/websocket, the endpoint the web app uses too —
      * through Node's built-in WebSocket (Electron 43 bundles Node 24, which has one). It replaced sockjs-client, the
@@ -217,7 +218,7 @@ class LbcBot {
         });
 
         client.onConnect = () => {
-            this.onLog('Listening for OBS commands from LBCBot.');
+            this.onLog('Listening for OBS and GreenSplit commands from LBCBot.');
             client.subscribe(`/topic/deviceControl/${this.userId}`, (message) => {
                 try {
                     const payload = JSON.parse(message.body);
@@ -306,6 +307,24 @@ class LbcBot {
 
     postObsEvent(payload) {
         return this.request('POST', '/users/obs/event', payload);
+    }
+
+    /** One GreenSplit trigger — the body is built by greensplit.js's mapping, one trigger type per post. */
+    postGreenSplitEvent(payload) {
+        return this.request('POST', '/users/greensplit/event', payload);
+    }
+
+    /**
+     * Tell LBCBot an integration is set up on this machine (`greensplit`), so the website offers its triggers and
+     * actions only to people who can fire them. Sent on every GreenSplit hello; the server keeps the first-seen time.
+     */
+    putIntegration(integration, body) {
+        return this.request('PUT', `/users/integrations/${encodeURIComponent(integration)}`, body);
+    }
+
+    /** The user turned the integration off here: the website stops offering it. */
+    deleteIntegration(integration) {
+        return this.request('DELETE', `/users/integrations/${encodeURIComponent(integration)}`);
     }
 }
 

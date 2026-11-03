@@ -1,7 +1,7 @@
 'use strict';
 
-/* Renderer: status and settings only. It has no credential, no network access and no OBS access — everything goes
-   through the narrow bridge in src/preload/index.js. */
+/* Renderer: status and settings only. It has no credential, no network access and no OBS or GreenSplit access —
+   everything goes through the narrow bridge in src/preload/index.js. */
 
 const el = (id) => document.getElementById(id);
 
@@ -23,9 +23,10 @@ function setPill(node, on, onText, offText) {
  * pane — the one piece of state that matters no matter what you are doing.
  */
 function setStatus(name, on) {
-    // "Offline" rather than "Not connected": the rail is 200px and the longer label wrapped the pill onto two
-    // lines. The dot carries the same meaning anyway, so the word only has to confirm it.
-    setPill(el(`${name}-status`), on, 'Connected', 'Offline');
+    // "Online / Offline" rather than "Connected / Not connected": the rail is 200px, and the longer words wrapped
+    // the pill onto two lines, then (with "GreenSplit" as a label) pushed it past the rail's edge. The dot carries
+    // the same meaning anyway, so the word only has to confirm it. The cards say "Connected" in full.
+    setPill(el(`${name}-status`), on, 'Online', 'Offline');
     el(`${name}-dot`).className = `dot ${on ? 'dot--on' : 'dot--off'}`;
 
     // Only offer what can happen now: Connect while offline, Disconnect while connected. ("Forget credential" stays
@@ -134,6 +135,68 @@ function applyUpdateStatus(status) {
     }
 }
 
+/* ------------------------------------------------------------------ GreenSplit */
+
+const GS_HINT = 'In GreenSplit: WebSocket Server → Enable, then Copy Connection URL.';
+const GS_STATE_TEXT = {
+    connecting: 'Connecting…',
+    'bad-token': 'Wrong access token',
+    unreachable: 'GreenSplit isn\'t running',
+    off: 'Not connected',
+};
+
+/** The card's hint line doubles as its error line, so an error appears where the URL went in and nothing shifts. */
+function setGreenSplitHint(error) {
+    const hint = el('gs-hint');
+    hint.textContent = error || GS_HINT;
+    hint.className = `hint${error ? ' hint--bad' : ''}`;
+}
+
+/**
+ * GreenSplit's state on its card, in the sidebar and in Settings.
+ *
+ * Nothing about GreenSplit shows outside its own card until it is set up — most streamers never run a speedrun timer,
+ * and an "Offline" pill for something you never asked for reads as something broken.
+ */
+function applyGreenSplitStatus(status) {
+    if (!status) return;
+    const on = status.state === 'connected';
+    let text = GS_STATE_TEXT[status.state] || 'Not connected';
+    if (!status.configured) text = 'Not set up';
+    else if (on) text = status.appVersion ? `Connected · GreenSplit ${status.appVersion}` : 'Connected';
+
+    el('gs-conn-dot').className = `dot ${on ? 'dot--on' : status.state === 'bad-token' ? 'dot--bad' : 'dot--off'}`;
+    el('gs-conn-text').textContent = text;
+
+    el('gs-statusline').hidden = !status.configured;
+    setPill(el('gs-status'), on, 'Online', 'Offline');
+    el('gs-dot').className = `dot ${on ? 'dot--on' : 'dot--off'}`;
+
+    // Connect only when nothing is trying: while it waits for GreenSplit to open it is already retrying on its own
+    // (and a pasted URL applies itself). Disconnect whenever it is on, including while it waits.
+    el('gs-connect').hidden = !['off', 'bad-token'].includes(status.state);
+    el('gs-disconnect').hidden = status.state === 'off';
+    el('gs-control').hidden = !(on && status.controlAvailable === false);
+    // What is saved, token masked, so an empty field still says it is set up — like the OBS password.
+    el('gs-url').placeholder = status.configured && status.url
+        ? `${status.url}?token=••••••••`
+        : 'paste from GreenSplit';
+
+    el('gs-forward-row').hidden = !status.configured;
+    el('gs-auto-row').hidden = !status.configured;
+}
+
+async function connectGreenSplit() {
+    const pasted = el('gs-url').value.trim();
+    const result = await window.lbcbot.connectGreenSplit(pasted || null);
+    if (result && result.ok === false) {
+        setGreenSplitHint(result.error);
+        return;
+    }
+    el('gs-url').value = '';
+    setGreenSplitHint(null);
+}
+
 let wasConnected = false;
 
 function applyState(state) {
@@ -146,7 +209,12 @@ function applyState(state) {
         assign(el('obs-url'), state.settings.obsUrl);
         el('forward-events').checked = state.settings.forwardObsEvents !== false;
         el('auto-connect').checked = state.settings.autoConnectObs !== false;
+        assign(el('gs-port'), state.settings.greensplitLivesplitPort);
+        el('gs-port').dataset.saved = state.settings.greensplitLivesplitPort ?? '';
+        el('gs-forward').checked = state.settings.forwardGreensplitEvents !== false;
+        el('gs-auto-connect').checked = state.settings.autoConnectGreensplit !== false;
     }
+    applyGreenSplitStatus(state.greensplit);
     // Coming online is when the account's lists first become readable, so read them then too.
     if (state.lbcbotConnected && !wasConnected) refreshAccountLists();
     wasConnected = !!state.lbcbotConnected;
@@ -580,6 +648,24 @@ function wire() {
     });
     el('obs-disconnect').addEventListener('click', () => window.lbcbot.disconnectObs());
 
+    // Pasting the Connection URL is the whole setup — no button press needed. Enter or Connect does the same.
+    el('gs-connect').addEventListener('click', connectGreenSplit);
+    el('gs-disconnect').addEventListener('click', () => window.lbcbot.disconnectGreenSplit());
+    el('gs-url').addEventListener('paste', () => setTimeout(connectGreenSplit, 0));
+    el('gs-url').addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') connectGreenSplit();
+    });
+    el('gs-url').addEventListener('input', () => setGreenSplitHint(null));
+    el('gs-port').addEventListener('change', () => {
+        const port = Number(el('gs-port').value.trim());
+        if (Number.isInteger(port) && port > 0 && port < 65536) {
+            window.lbcbot.updateSettings({ greensplitLivesplitPort: port });
+        } else {
+            // Not a port: put the saved one back rather than keep something that can never connect.
+            el('gs-port').value = el('gs-port').dataset.saved || '';
+        }
+    });
+
     el('refresh-overlays').addEventListener('click', refreshOverlays);
 
     el('refresh-dashboards').addEventListener('click', refreshDashboards);
@@ -601,9 +687,12 @@ function wire() {
         obsUrl: el('obs-url').value.trim(),
         forwardObsEvents: el('forward-events').checked,
         autoConnectObs: el('auto-connect').checked,
+        forwardGreensplitEvents: el('gs-forward').checked,
+        autoConnectGreensplit: el('gs-auto-connect').checked,
     });
     el('obs-url').addEventListener('change', persist);
-    ['forward-events', 'auto-connect'].forEach((id) => el(id).addEventListener('change', persist));
+    ['forward-events', 'auto-connect', 'gs-forward', 'gs-auto-connect']
+        .forEach((id) => el(id).addEventListener('change', persist));
 
     el('check-updates').addEventListener('click', async () => {
         el('update-status').textContent = 'Checking…';
@@ -622,6 +711,7 @@ function wire() {
     window.lbcbot.onUpdateStatus(applyUpdateStatus);
     window.lbcbot.onLog(appendLog);
     window.lbcbot.onObsStatus((status) => setStatus('obs', status.connected));
+    window.lbcbot.onGreenSplitStatus(applyGreenSplitStatus);
     window.lbcbot.onDeviceCode((grant) => {
         el('device-code').textContent =
             `Approve code ${grant.userCode} — your browser should have opened at ${grant.verificationUri}`;

@@ -98,6 +98,7 @@ h3 { margin: 0; font-size: 14px; font-weight: 600; }
 .dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; }
 .dot--on { background: var(--on); box-shadow: 0 0 0 3px rgba(91, 201, 139, 0.16); }
 .dot--off { background: var(--off); }
+.dot--bad { background: var(--bad); }
 
 /* ---- Panes -------------------------------------------------------------- */
 .main { min-width: 0; overflow: hidden; }
@@ -183,6 +184,7 @@ h3 { margin: 0; font-size: 14px; font-weight: 600; }
 }
 
 .row--actions { margin-top: 12px; }
+.row--after-hint { margin-top: 8px; }
 
 button {
     padding: 6px 14px;
@@ -222,6 +224,9 @@ button.primary:hover:not(:disabled) { background: #6c37bd; }
     color: var(--muted);
     font-size: 12px;
 }
+
+/* A hint line turned into the error it explains, in place, so nothing around it moves. */
+.hint--bad { color: var(--bad); }
 
 .list {
     margin: 0;

@@ -6,8 +6,8 @@ const { contextBridge, ipcRenderer } = require('electron');
  * The entire renderer-facing API surface.
  *
  * Deliberately narrow and verb-shaped rather than exposing `ipcRenderer` directly: the renderer never sees the
- * credential, never talks to OBS, and never calls the LBCBot API. With `contextIsolation` on and `nodeIntegration`
- * off, this list is the hard boundary — anything not named here is unreachable from the page.
+ * credential, never talks to OBS or GreenSplit, and never calls the LBCBot API. With `contextIsolation` on and
+ * `nodeIntegration` off, this list is the hard boundary — anything not named here is unreachable from the page.
  */
 contextBridge.exposeInMainWorld('lbcbot', {
     getState: () => ipcRenderer.invoke('get-state'),
@@ -19,6 +19,10 @@ contextBridge.exposeInMainWorld('lbcbot', {
 
     connectObs: () => ipcRenderer.invoke('connect-obs'),
     disconnectObs: () => ipcRenderer.invoke('disconnect-obs'),
+
+    // GreenSplit. The pasted Connection URL goes one way: its token is kept in the main process and never sent back.
+    connectGreenSplit: (connectionUrl) => ipcRenderer.invoke('connect-greensplit', connectionUrl),
+    disconnectGreenSplit: () => ipcRenderer.invoke('disconnect-greensplit'),
 
     getOverlays: () => ipcRenderer.invoke('get-overlays'),
     getScenes: () => ipcRenderer.invoke('get-scenes'),
@@ -60,6 +64,11 @@ contextBridge.exposeInMainWorld('lbcbot', {
         const listener = (_event, status) => handler(status);
         ipcRenderer.on('obs-status', listener);
         return () => ipcRenderer.removeListener('obs-status', listener);
+    },
+    onGreenSplitStatus: (handler) => {
+        const listener = (_event, status) => handler(status);
+        ipcRenderer.on('greensplit-status', listener);
+        return () => ipcRenderer.removeListener('greensplit-status', listener);
     },
     onUpdateStatus: (handler) => {
         const listener = (_event, status) => handler(status);

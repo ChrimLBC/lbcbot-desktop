@@ -6,19 +6,22 @@ const store = require('./store');
 const sites = require('./sites');
 const { LbcBot } = require('./lbcbot');
 const { ObsBridge } = require('./obs');
+const { GreenSplitBridge, parseConnectionUrl } = require('./greensplit');
+const { routeDeviceCommand } = require('./devicecontrol');
 const { Updater } = require('./updater');
 
 /**
- * Main process: owns both connections and relays between them.
+ * Main process: owns every connection (LBCBot, OBS, GreenSplit) and relays between them.
  *
  * The renderer is a status/settings panel only — it holds no credential and makes no API calls. Everything privileged
  * stays here behind a narrow IPC surface (see src/preload/index.js), with `contextIsolation` on and `nodeIntegration`
- * off, so a compromised renderer cannot read the keychain or reach OBS.
+ * off, so a compromised renderer cannot read the keychain or reach OBS or GreenSplit.
  */
 
 let mainWindow = null;
 let lbcbot = null;
 let obs = null;
+let greensplit = null;
 let updater = null;
 
 /** Bounded in-memory log; the renderer renders it and it is the only place a user sees what the bridge is doing. */
@@ -925,13 +928,49 @@ function buildServices() {
             }
         },
     });
+
+    greensplit = new GreenSplitBridge({
+        settings: () => store.settings(),
+        token: () => store.getGreensplitToken(),
+        onLog: log,
+        onStatus: (status) => send('greensplit-status', status),
+        onConnected: () => announceGreenSplit(),
+        onGreenSplitEvent: async (event) => {
+            // GreenSplit -> LBCBot. The bridge sends these one at a time, so a split's SPLIT, GOLD and PACE arrive in
+            // that order. Without a credential there is nowhere to send them; saying so on every split would bury the
+            // log, and the Status pane already says LBCBot is not connected.
+            if (!store.hasCredential()) {
+                return;
+            }
+            const result = await lbcbot.postGreenSplitEvent(event);
+            if (!result.ok) {
+                log(`Could not forward ${event.eventType}: ${result.error || result.status}`);
+            }
+        },
+    });
 }
 
-/** LBCBot -> OBS. Started once there is a credential, and restarted whenever one is obtained. */
+/**
+ * Tell LBCBot GreenSplit is set up here, so the website shows its triggers and actions. On every hello, and again when
+ * LBCBot is connected after GreenSplit already was.
+ */
+async function announceGreenSplit() {
+    if (!greensplit || !greensplit.connected || !store.hasCredential()) {
+        return;
+    }
+    const result = await lbcbot.putIntegration('greensplit', { appVersion: greensplit.appVersion || '' });
+    if (!result.ok) {
+        log(`Could not tell LBCBot that GreenSplit is set up: ${result.error || result.status}`);
+    }
+}
+
+/** LBCBot -> OBS / GreenSplit. Started once there is a credential, and restarted whenever one is obtained. */
 async function startDeviceControl() {
-    const started = await lbcbot.startDeviceControl((command) => obs.execute(command));
+    const started = await lbcbot.startDeviceControl(
+        (command) => routeDeviceCommand(command, { obs, greensplit, onLog: log }),
+    );
     if (!started) {
-        log('Not listening for OBS commands yet — connect to LBCBot first.');
+        log('Not listening for OBS or GreenSplit commands yet — connect to LBCBot first.');
     }
 }
 
@@ -942,6 +981,8 @@ async function pushState() {
         obsConnected: obs ? obs.connected : false,
         userId: lbcbot ? lbcbot.userId : null,
         hasObsPassword: Boolean(store.getObsPassword()),
+        // Never the token: whether one is saved is in `greensplit.configured`.
+        greensplit: greensplit ? greensplit.status : null,
     });
 }
 
@@ -987,6 +1028,7 @@ function registerIpc() {
 
     ipcMain.handle('update-settings', async (_event, patch) => {
         const updated = store.update(patch);
+        greensplit.settingsChanged(); // a new LiveSplit adapter port takes effect at once
         await pushState();
         return updated;
     });
@@ -1008,6 +1050,7 @@ function registerIpc() {
             if (ok) {
                 log('Connected to LBCBot.');
                 await startDeviceControl();
+                announceGreenSplit();
                 // Any dashboard already open is sitting on the signed-out page, because it was opened before
                 // there was a credential to sign in with. Its page asks again on reload, so this is what turns
                 // "connect" into "my dashboards are signed in" without the user closing and reopening them.
@@ -1041,6 +1084,41 @@ function registerIpc() {
 
     ipcMain.handle('disconnect-obs', async () => {
         await obs.disconnect();
+        await pushState();
+        return true;
+    });
+
+    /*
+     * Turn GreenSplit on. `pasted` is a Connection URL straight from GreenSplit (or empty to reconnect with the saved
+     * one): its address goes into settings and its token into the keychain, so the renderer never gets the token back.
+     */
+    ipcMain.handle('connect-greensplit', async (_event, pasted) => {
+        if (pasted) {
+            const parsed = parseConnectionUrl(pasted);
+            if (!parsed.ok) {
+                return { ok: false, error: parsed.error };
+            }
+            store.update({ greensplitUrl: parsed.url });
+            await store.setGreensplitToken(parsed.token);
+        }
+        if (!greensplit.configured()) {
+            return { ok: false, error: 'Paste the Connection URL from GreenSplit.' };
+        }
+        greensplit.connect();
+        await pushState();
+        return { ok: true };
+    });
+
+    /** Turn GreenSplit off — and tell LBCBot, so the website stops offering GreenSplit triggers it can no longer fire. */
+    ipcMain.handle('disconnect-greensplit', async () => {
+        greensplit.disconnect();
+        log('Disconnected from GreenSplit.');
+        if (store.hasCredential()) {
+            const result = await lbcbot.deleteIntegration('greensplit');
+            if (!result.ok) {
+                log(`Could not tell LBCBot that GreenSplit is off: ${result.error || result.status}`);
+            }
+        }
         await pushState();
         return true;
     });
@@ -1216,6 +1294,10 @@ app.whenReady().then(async () => {
     if (settings.autoConnectObs) {
         await obs.connect();
     }
+    // Not awaited: GreenSplit is often opened after this app, and the bridge keeps trying in the background.
+    if (settings.autoConnectGreensplit && greensplit.configured()) {
+        greensplit.connect();
+    }
     await pushState();
 
     /*
@@ -1263,6 +1345,9 @@ app.on('window-all-closed', () => {
     }
     if (obs) {
         obs.disconnect();
+    }
+    if (greensplit) {
+        greensplit.disconnect(); // closing the app is not turning GreenSplit off, so LBCBot is not told
     }
     if (lbcbot) {
         lbcbot.stopDeviceControl();

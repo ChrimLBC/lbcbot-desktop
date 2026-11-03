@@ -7,13 +7,13 @@ const path = require('node:path');
 /**
  * Settings and credential storage.
  *
- * The LBCBot credential and the OBS websocket password are encrypted with Electron's `safeStorage`, which is backed
- * by the OS keychain (Keychain on macOS, DPAPI on Windows, libsecret on Linux). Deliberately not `keytar`: that is an
- * unmaintained native module that needs rebuilding per Electron version, and safeStorage covers the same ground with
- * nothing to compile.
+ * The LBCBot credential, the OBS websocket password and the GreenSplit access token are encrypted with Electron's
+ * `safeStorage`, which is backed by the OS keychain (Keychain on macOS, DPAPI on Windows, libsecret on Linux).
+ * Deliberately not `keytar`: that is an unmaintained native module that needs rebuilding per Electron version, and
+ * safeStorage covers the same ground with nothing to compile.
  *
  * Non-secret settings sit in plaintext in the same file so they stay readable when debugging a user's setup — the
- * point of encryption here is the two secrets, not the window size.
+ * point of encryption here is the secrets, not the window size.
  */
 
 const sites = require('./sites');
@@ -24,6 +24,15 @@ const DEFAULTS = {
     obsUrl: 'ws://127.0.0.1:4455',
     autoConnectObs: true,
     forwardObsEvents: true,
+    /**
+     * GreenSplit's Connection URL WITHOUT its `token` — the token is a secret (below). Empty until set up. The LiveSplit
+     * adapter shares this URL's host; only its port is a setting.
+     */
+    greensplitUrl: '',
+    greensplitLivesplitPort: 16834,
+    // Both only matter once a Connection URL is saved, so true from the start means "on as soon as it is set up".
+    autoConnectGreensplit: true,
+    forwardGreensplitEvents: true,
     /**
      * Per-dashboard window state, keyed by dashboardId:
      * `{ "<id>": { x, y, width, height, maximized, open } }`.
@@ -63,12 +72,12 @@ function write() {
 }
 
 /**
- * The two secrets, decrypted once at startup (`load`) and kept in memory: safeStorage's synchronous methods are
+ * The secrets, decrypted once at startup (`load`) and kept in memory: safeStorage's synchronous methods are
  * deprecated in Electron 45 and gone in 46, while a dashboard window asks for the credential over a synchronous IPC. A
  * write updates the memory copy at once and persists the encrypted form when the keychain answers.
  */
-const SECRETS = ['credential', 'obsPassword'];
-const secrets = { credential: null, obsPassword: null };
+const SECRETS = ['credential', 'obsPassword', 'greensplitToken'];
+const secrets = { credential: null, obsPassword: null, greensplitToken: null };
 
 /**
  * Encrypt a secret for storage. Falls back to plaintext with a loud warning when the OS has no usable keychain
@@ -139,13 +148,15 @@ module.exports = {
     },
 
     settings() {
-        const { credential, obsPassword, ...rest } = read();
+        const { credential, obsPassword, greensplitToken, ...rest } = read();
         return rest;
     },
 
     update(patch) {
         read();
-        Object.assign(cache, sites.stripEndpointSettings(patch).settings);
+        // Secrets change only through their setters, which encrypt: a settings patch carrying one is not obeyed.
+        const { credential, obsPassword, greensplitToken, ...safe } = patch || {};
+        Object.assign(cache, sites.stripEndpointSettings(safe).settings);
         write();
         return module.exports.settings();
     },
@@ -187,6 +198,14 @@ module.exports = {
 
     setObsPassword(value) {
         return setSecret('obsPassword', value);
+    },
+
+    getGreensplitToken() {
+        return secrets.greensplitToken;
+    },
+
+    setGreensplitToken(value) {
+        return setSecret('greensplitToken', value);
     },
 
     hasCredential() {

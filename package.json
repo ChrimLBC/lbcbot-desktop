@@ -1,7 +1,7 @@
 {
   "name": "lbcbot-desktop",
   "version": "1.0.10",
-  "description": "LBCBot desktop app — bridges OBS to LBCBot in both directions and sets up overlay browser sources.",
+  "description": "LBCBot desktop app — bridges OBS and GreenSplit to LBCBot in both directions and sets up overlay browser sources.",
   "private": true,
   "author": {
     "name": "LBCBot",

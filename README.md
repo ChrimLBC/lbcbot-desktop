@@ -1,6 +1,7 @@
 # lbcbot-desktop
 
-The LBCBot desktop app. Bridges OBS and LBCBot in **both** directions and sets up overlay browser sources for you.
+The LBCBot desktop app. Bridges OBS and the GreenSplit speedrun timer to LBCBot in **both** directions and sets up
+overlay browser sources for you.
 
 > Ships as installers (`.dmg` / `.exe` / `.AppImage`) via electron-builder. **No Docker image, no helm chart** — it is
 > not a cluster workload, same as `lbcbot-streamdeck` and `lbcbot-tts`.
@@ -45,12 +46,87 @@ key. The URL is never displayed or copied, which is the point: a component-view 
 access *and refresh* token, and the key that replaced it is revocable under **Connected apps** on the website.
 Re-running setup updates the existing input rather than piling up `Overlay (2)` next to it.
 
+## GreenSplit (speedrun timer)
+
+[GreenSplit](https://greensplit.net) is a desktop speedrun timer. Like OBS it runs on the streamer's PC, and like OBS
+everything it needs is already inside it: two local servers, both off until switched on in GreenSplit's menus. The
+bridge is `src/main/greensplit.js` — plain Node, no Electron import, so the mapping, the pace tracker and the adapter
+client are all tested directly (`test/greensplit.test.js`, replaying a recorded real session).
+
+**Setting it up**
+
+1. In GreenSplit: **WebSocket Server → Enable WebSocket event server**, then **Copy Connection URL**.
+2. Paste it into the GreenSplit card on the Status pane. That is the whole setup — no button needed. The address goes
+   into settings and the `token` in it into the keychain, like the OBS password; the field then shows the saved URL
+   with the token masked.
+3. To let LBCBot drive the timer too: **LiveSplit Server Adapter → Enable LiveSplit Server Adapter**. It listens on
+   16834 on the same host as the Connection URL; the card asks for the port only when it cannot reach the adapter,
+   which is the only time the port can be the problem.
+
+GreenSplit is often opened after this app, so the bridge keeps retrying (2 s, doubling to 30 s) and logs one line per
+outage, not one per attempt. A wrong token is silent on GreenSplit's side — the socket opens and nothing is ever sent —
+so no `hello` within 5 s shows as **Wrong access token**, and that is not retried: pasting the URL again fixes it.
+
+**GreenSplit → LBCBot** — events become triggers, posted to `POST /api/users/greensplit/event`, one post per trigger
+type and strictly in order (a gold split posts `SPLIT`, then `GOLD`, then any pace change). Times are integer
+nanoseconds; the API formats them. Gated by **Send GreenSplit events to LBCBot** in Settings.
+
+| Trigger | Fires on |
+|---|---|
+| `GREENSPLIT_RUN_STARTED` | the timer starting |
+| `GREENSPLIT_SPLIT` | every split except the last (the last one is the finish) |
+| `GREENSPLIT_GOLD` | a best segment, on a split or on the finish — as well as the SPLIT / RUN_FINISHED |
+| `GREENSPLIT_PACE_AHEAD` / `_BEHIND` | the pace flipping (see below) |
+| `GREENSPLIT_SPLIT_UNDONE` / `_SKIPPED` | an undo / a skipped split |
+| `GREENSPLIT_PAUSED` / `_RESUMED` | pause / resume |
+| `GREENSPLIT_RUN_FINISHED` | the final split |
+| `GREENSPLIT_PERSONAL_BEST` | a finish that beats the PB, at the moment of the finish |
+| `GREENSPLIT_RESET` | a reset, finished or not |
+| `GREENSPLIT_COMPARISON_CHANGED` | the comparison changing (not "changing" to the one already showing, which GreenSplit also announces) |
+
+The pace is followed here, not in GreenSplit: none at the start, at a reset and on a comparison change; a split or
+finish below its comparison time is ahead, above it behind; and mid-segment, the moment the running time passes the
+comparison's split time for the segment being run, it is behind (`live: true`) — before the split that would prove it.
+Ahead and behind fire only on a change. An undo re-derives the pace from the splits that remain (and the running time)
+without firing, so undoing a mistaken split never announces the same pace twice. Timer ticks are subscribed at 4 Hz
+only for that live check.
+
+`GREENSPLIT_PERSONAL_BEST` fires from the finish's `personal_best_candidate`, because GreenSplit's own `personal_best`
+event only comes at the reset afterwards and never for a first-ever completion. A first completion has no
+`previousBestNs`.
+
+Every GreenSplit `hello` also calls `PUT /api/users/integrations/greensplit {appVersion}`, and **Disconnect** calls
+`DELETE` — so the website only offers GreenSplit triggers and actions to someone whose GreenSplit can fire them.
+Quitting the app is not turning GreenSplit off and tells LBCBot nothing.
+
+**LBCBot → GreenSplit** — a trigger's `greensplitAction` arrives on the same `/topic/deviceControl/{userId}` as the OBS
+actions, with `target: "greensplit"` (OBS commands have no target, and a missing target still means OBS —
+`src/main/devicecontrol.js`). Executed over the LiveSplit Server Adapter, one `command\r\n` line at a time:
+
+| Action | LiveSplit command |
+|---|---|
+| `START_TIMER` / `SPLIT` / `START_OR_SPLIT` | `starttimer` / `split` / `startorsplit` |
+| `UNDO_SPLIT` / `SKIP_SPLIT` | `unsplit` / `skipsplit` |
+| `PAUSE` / `RESUME` | `pause` / `resume` |
+| `TOGGLE_PAUSE` | `getcurrenttimerphase`, then `pause` if Running, `resume` if Paused, nothing otherwise |
+| `RESET` | `reset` |
+| `SET_COMPARISON` `{comparison}` | `setcomparison <comparison>` (a name with a line break is refused) |
+| `NEXT_COMPARISON` / `PREVIOUS_COMPARISON` | the next / previous name in the run's comparisons, wrapping, then `setcomparison` |
+
+Like the OBS actions, the action is an opaque JSON string the server never parses: unknown types are logged and
+ignored. A command fired by a `GREENSPLIT_*` trigger is ignored outright — a split that fires a trigger that splits
+would run the timer away. The adapter answers nothing to an action that works but an `[Error]: …` line to one that
+fails (an unknown comparison, say); sending one command at a time is what lets that error be logged against the right
+action.
+
 ## Security model
 
-- The credential and the OBS password are encrypted with Electron's **`safeStorage`** (OS keychain). Not `keytar` —
-  that is an unmaintained native module needing a rebuild per Electron version, for no extra protection.
+- The credential, the OBS password and the GreenSplit access token are encrypted with Electron's **`safeStorage`** (OS
+  keychain). Not `keytar` — that is an unmaintained native module needing a rebuild per Electron version, for no extra
+  protection. A settings update from the renderer cannot write any of them.
 - `contextIsolation: true`, `nodeIntegration: false`, and the renderer's entire capability is the verb list in
-  `src/preload/index.js`. It holds no credential, makes no API calls and never touches OBS.
+  `src/preload/index.js`. It holds no credential, makes no API calls and never touches OBS or GreenSplit; a pasted
+  Connection URL goes in once and its token never comes back out.
 - The renderer sets a strict CSP and builds all DOM with `textContent`; overlay names are user data.
 - **Forgetting the credential here does not revoke it.** Revoke under Connected apps on the website.
 
@@ -127,6 +203,16 @@ check. There is also no mac build in CI yet — the website's download button is
 
 - **Never run against real OBS.** Module loading, the action vocabulary (every type verified against a stubbed
   obs-websocket client), the not-found path and the revert-timer behaviour are all checked; nothing else is.
+- **GreenSplit was never run inside the Electron app.** The bridge was driven from plain Node against a real
+  GreenSplit 0.3.4 (headless Linux build): every action, every forwarded event type, the wrong-token, closed-app and
+  adapter-off states. The card was checked in a browser with a stubbed bridge. Windows and macOS builds of GreenSplit
+  were not tried.
+- **GreenSplit: real time only.** Game time, subsplit sections and the `run_saved` / `attempt_committed` bookkeeping
+  are not forwarded; `totalSplits` counts every segment, subsplits included.
+- **GreenSplit: a wrong token leaves one socket open** until GreenSplit quits — GreenSplit never answers its close.
+  Not retried, so it is one per attempt.
+- **GreenSplit's LiveSplit adapter has no authentication** (GreenSplit's design): anything on the machine — or the
+  network, with "Allow other devices" on — can drive the timer, with or without this app.
 - **No tray mode** — closing the window quits, so the bridge stops. Fine for "launch it when you stream", wrong for
   "always on".
 - **No audio deck yet.** Browser-based song playback still lives in the website's `/song-queue` tab

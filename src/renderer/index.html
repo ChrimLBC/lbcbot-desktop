@@ -47,12 +47,18 @@
             <div class="statusline">
                 <span id="lbc-dot" class="dot dot--off"></span>
                 <span class="statusline__label">LBCBot</span>
-                <span id="lbc-status" class="pill pill--off">Not connected</span>
+                <span id="lbc-status" class="pill pill--off">Offline</span>
             </div>
             <div class="statusline">
                 <span id="obs-dot" class="dot dot--off"></span>
                 <span class="statusline__label">OBS</span>
-                <span id="obs-status" class="pill pill--off">Not connected</span>
+                <span id="obs-status" class="pill pill--off">Offline</span>
+            </div>
+            <!-- Only once GreenSplit is set up: most streamers never use a speedrun timer. -->
+            <div class="statusline" id="gs-statusline" hidden>
+                <span id="gs-dot" class="dot dot--off"></span>
+                <span class="statusline__label">GreenSplit</span>
+                <span id="gs-status" class="pill pill--off">Offline</span>
             </div>
         </div>
     </aside>
@@ -63,7 +69,7 @@
             <header class="pane__head">
                 <span class="pane__mark"><svg class="pane__mark-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg></span>
                 <h2>Status</h2>
-                <p class="pane__sub">Connect this machine to your account and to OBS.</p>
+                <p class="pane__sub">Connect this machine to your account, OBS and GreenSplit.</p>
             </header>
 
             <section class="card">
@@ -125,6 +131,41 @@
                 <div class="row row--actions">
                     <button id="obs-connect" class="primary">Connect</button>
                     <button id="obs-disconnect">Disconnect</button>
+                </div>
+            </section>
+
+            <!--
+              GreenSplit, the speedrun timer. Pasting its Connection URL is the whole setup: the token in it goes to the
+              keychain and the field empties, its placeholder showing what is saved (token masked) — like the OBS
+              password. Errors replace the hint line rather than adding one, so nothing below moves. The LiveSplit
+              adapter port only appears when control fails, which is the only time it can be the problem.
+            -->
+            <section class="card">
+                <div class="card__head">
+                    <h3>GreenSplit</h3>
+                    <span class="conn">
+                        <span class="dot dot--off" id="gs-conn-dot"></span>
+                        <span id="gs-conn-text">Not set up</span>
+                    </span>
+                </div>
+                <p class="hint" id="gs-hint">In GreenSplit: WebSocket Server → Enable, then Copy Connection URL.</p>
+                <div class="row">
+                    <label for="gs-url">Connection URL</label>
+                    <input id="gs-url" type="text" spellcheck="false" autocomplete="off"
+                           placeholder="paste from GreenSplit" />
+                </div>
+                <div class="row row--actions">
+                    <button id="gs-connect" class="primary">Connect</button>
+                    <button id="gs-disconnect" hidden>Disconnect</button>
+                </div>
+                <!-- Only while LBCBot can't drive the timer: the fix, and the one setting that could be wrong. -->
+                <div id="gs-control" hidden>
+                    <p class="hint">Turn on LiveSplit Server Adapter in GreenSplit to let LBCBot control the timer.</p>
+                    <div class="row row--after-hint">
+                        <label for="gs-port">LiveSplit adapter port</label>
+                        <input id="gs-port" type="text" inputmode="numeric" maxlength="5" spellcheck="false"
+                               placeholder="16834" />
+                    </div>
                 </div>
             </section>
         </section>
@@ -313,6 +354,15 @@
                 <div class="row">
                     <label for="auto-connect">Connect to OBS on launch</label>
                     <input id="auto-connect" type="checkbox" />
+                </div>
+                <!-- GreenSplit's two, shown once it is set up. -->
+                <div class="row" id="gs-forward-row" hidden>
+                    <label for="gs-forward">Send GreenSplit events to LBCBot</label>
+                    <input id="gs-forward" type="checkbox" />
+                </div>
+                <div class="row" id="gs-auto-row" hidden>
+                    <label for="gs-auto-connect">Connect to GreenSplit on launch</label>
+                    <input id="gs-auto-connect" type="checkbox" />
                 </div>
             </section>
 
