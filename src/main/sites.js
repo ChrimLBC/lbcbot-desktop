@@ -58,4 +58,31 @@ function isSiteHost(host, siteUrl) {
     }
 }
 
-module.exports = { DEFAULT_SITE_URL, DEFAULT_API_URL, SITE_HOSTS, resolveEndpoints, stripEndpointSettings, isSiteHost };
+/**
+ * A link to our own site stays in the app unless it carries this marker, which asks for the system browser. It exists
+ * for "Confirm it's you": the API refuses an app's credential for those actions outright (Sessions.Recent), so the only
+ * way to finish one is a real browser session. Must match OPEN_IN_BROWSER in the web app's ReauthPrompt.
+ */
+const BROWSER_MARKER = '#open-in-browser';
+
+/**
+ * The address to hand the system browser if this link asks for it, without the marker; otherwise null.
+ *
+ * http(s) only, and this is the point of the check: the policy calling this also governs pages inside the Twitch
+ * webviews, and `shell.openExternal` launches whatever handles a scheme, so `foo://lbcbot.com/#open-in-browser` must not
+ * get through just because its host matches.
+ */
+function browserTarget(target) {
+    try {
+        const url = new URL(target);
+        if (url.hash !== BROWSER_MARKER || !/^https?:$/.test(url.protocol)) {
+            return null;
+        }
+        url.hash = '';
+        return url.href;
+    } catch {
+        return null;
+    }
+}
+
+module.exports = { DEFAULT_SITE_URL, DEFAULT_API_URL, SITE_HOSTS, resolveEndpoints, stripEndpointSettings, isSiteHost, browserTarget };

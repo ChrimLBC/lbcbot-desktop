@@ -189,6 +189,11 @@ Twitch page loaded out of sight, and those pages ask for a passkey by themselves
 locks the dashboard behind a Windows dialog, so passkeys are switched off on twitch.tv in this app (`src/main/twitchPasskeys.js`).
 **Sign in to Twitch with a password here; passkeys do not work.**
 
+Some actions need a person to confirm it's them: approving a device, connecting a platform, the donation PayPal, roles,
+deleting the account. This app can't, because the API refuses an app's credential for them outright (`Sessions.Recent`).
+So the website's "Confirm it's you" box offers **Open in browser**, a link to the same page marked `#open-in-browser`,
+which `windowOpenPolicy` hands to the system browser (`sites.browserTarget`). The person finishes the action there.
+
 ## Releasing, and how an installed copy updates itself
 
 Tag and push; the Windows workflow does the rest.

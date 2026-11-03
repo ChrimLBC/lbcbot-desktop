@@ -4,6 +4,26 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const s = require('../src/main/sites');
 
+test('a marked link asks for the system browser, keeping its address and dropping the marker', () => {
+    assert.equal(s.browserTarget('https://lbcbot.com/dashboard-view?dashboardId=2#open-in-browser'), 'https://lbcbot.com/dashboard-view?dashboardId=2');
+    assert.equal(s.browserTarget('http://localhost:3000/integrations#open-in-browser'), 'http://localhost:3000/integrations');
+});
+
+test('anything else stays where it was going', () => {
+    assert.equal(s.browserTarget('https://lbcbot.com/dashboard'), null);
+    assert.equal(s.browserTarget('https://lbcbot.com/dashboard#somewhere-else'), null);
+    assert.equal(s.browserTarget('https://lbcbot.com/dashboard?x=#open-in-browser-please'), null);
+    assert.equal(s.browserTarget('not a url'), null);
+    assert.equal(s.browserTarget(''), null);
+    assert.equal(s.browserTarget(undefined), null);
+});
+
+test('a marked link can only ever be http(s): openExternal launches whatever handles a scheme', () => {
+    for (const scheme of ['foo', 'file', 'ftp', 'javascript', 'ms-settings', 'vbscript']) {
+        assert.equal(s.browserTarget(`${scheme}://lbcbot.com/#open-in-browser`), null, scheme);
+    }
+});
+
 test('packaged builds use the fixed endpoints and ignore the environment', () => {
     const env = { LBCBOT_SITE_URL: 'http://localhost:3000', LBCBOT_API_URL: 'http://localhost:8081' };
     assert.deepEqual(s.resolveEndpoints(true, env), { siteUrl: 'https://lbcbot.com', apiUrl: 'https://api.lbcbot.com' });
