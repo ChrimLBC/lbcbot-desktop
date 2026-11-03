@@ -105,7 +105,8 @@ class LbcBot {
         }
     }
 
-    async request(method, path, body, retrying = false) {
+    /** `signal` (optional) abandons the call — a caller that cannot wait long gives one. */
+    async request(method, path, body, { retrying = false, signal } = {}) {
         const token = await this.token();
         if (!token) {
             return { ok: false, status: 0, error: 'not_connected' };
@@ -115,10 +116,11 @@ class LbcBot {
                 method,
                 headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
                 body: body === undefined ? undefined : JSON.stringify(body),
+                signal,
             });
             if (response.status === 401 && !retrying) {
                 this.accessToken = null;
-                return this.request(method, path, body, true);
+                return this.request(method, path, body, { retrying: true, signal });
             }
             const text = await response.text();
             if (!response.ok) {
@@ -310,8 +312,8 @@ class LbcBot {
     }
 
     /** One GreenSplit trigger — the body is built by greensplit.js's mapping, one trigger type per post. */
-    postGreenSplitEvent(payload) {
-        return this.request('POST', '/users/greensplit/event', payload);
+    postGreenSplitEvent(payload, { signal } = {}) {
+        return this.request('POST', '/users/greensplit/event', payload, { signal });
     }
 
     /**

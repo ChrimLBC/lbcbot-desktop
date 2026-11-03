@@ -31,6 +31,10 @@ const RETRY_MIN_MS = 2000;
 const RETRY_MAX_MS = 30000;
 /** While connected but unable to control the timer, how often to look for the adapter being switched on. */
 const CONTROL_PROBE_MS = 15000;
+/** One post may take this long before the next trigger stops waiting for it. */
+const POST_TIMEOUT_MS = 8000;
+/** A trigger that waited longer than this to be sent is dropped: an alert for a split half a minute ago is noise. */
+const STALE_MS = 30000;
 
 /** The trigger types, exactly as the API's enum spells them. */
 const T = {
@@ -52,6 +56,37 @@ const T = {
 // ------------------------------------------------------------------ the Connection URL
 
 /**
+ * Whether a host is this computer or the local network — the only places a GreenSplit can be: localhost, 127.0.0.0/8,
+ * ::1, the private and link-local ranges (10/8, 172.16/12, 192.168/16, 169.254/16, fc00::/7, fe80::/10) and `.local`
+ * names. The access token is sent to this host, so anything else is refused however the address got into settings —
+ * checked when a URL is pasted AND every time the connection is built. Takes a URL's `hostname` (already normalised:
+ * `127.1` arrives as `127.0.0.1`, IPv6 in brackets).
+ */
+function isLocalHost(hostname) {
+    const host = String(hostname || '').toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, '');
+    if (host === 'localhost' || /^[a-z0-9-]+(\.[a-z0-9-]+)*\.local$/.test(host)) {
+        return true;
+    }
+    if (net.isIPv4(host)) {
+        const [a, b] = host.split('.').map(Number);
+        return a === 127 || a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168)
+            || (a === 169 && b === 254);
+    }
+    if (net.isIPv6(host)) {
+        if (host === '::1') {
+            return true;
+        }
+        const first = host.startsWith('::') ? 0 : parseInt(host.split(':')[0], 16);
+        return (first & 0xfe00) === 0xfc00 || (first & 0xffc0) === 0xfe80;
+    }
+    return false;
+}
+
+const notLocal = () => Object.assign(new Error('That address is not on this computer or your network'), {
+    code: 'ENOTLOCAL',
+});
+
+/**
  * Split the Connection URL GreenSplit copies (`ws://host:port/v1/events?token=…`) into the address, which is kept in
  * settings, and the access token, which is a secret like the OBS password and never written to settings.json.
  *
@@ -71,18 +106,29 @@ function parseConnectionUrl(text) {
     if (url.protocol !== 'ws:' && url.protocol !== 'wss:') {
         return { ok: false, error: 'A Connection URL starts with ws:// — in GreenSplit, use Copy Connection URL.' };
     }
+    if (!isLocalHost(url.hostname)) {
+        return { ok: false, error: 'GreenSplit has to be on this computer or your home network — that address is neither.' };
+    }
     const token = url.searchParams.get('token');
     if (!token) {
         return { ok: false, error: 'That URL has no access token. In GreenSplit, use Copy Connection URL.' };
     }
     url.searchParams.delete('token');
     url.hash = '';
+    url.username = '';
+    url.password = '';
     return { ok: true, url: url.toString(), token };
 }
 
-/** The address from settings with the token put back — only ever built in memory, at connect time. */
+/**
+ * The address from settings with the token put back — only ever built in memory, at connect time, and only for a
+ * local address (throws `ENOTLOCAL` otherwise): this is the last point before the token leaves the process.
+ */
 function buildConnectionUrl(url, token) {
     const full = new URL(url);
+    if (!isLocalHost(full.hostname)) {
+        throw notLocal();
+    }
     full.searchParams.set('token', token);
     return full.toString();
 }
@@ -487,13 +533,14 @@ function planAction(action, run) {
         case 'TOGGLE_PAUSE':
             return { toggle: true };
         case 'SET_COMPARISON': {
-            const name = typeof action.comparison === 'string' ? action.comparison : '';
-            if (!name.trim()) {
-                return { skip: 'SET_COMPARISON has no comparison name' };
+            // Trimmed: the web editor saves the action while the name is still being typed, spaces and all.
+            const name = typeof action.comparison === 'string' ? action.comparison.trim() : '';
+            if (!name) {
+                return { skip: 'it has no comparison name yet' };
             }
             // One line is one command: a name with a line break in it would smuggle a second one (a reset, say) in.
             if (/[\r\n]/.test(name)) {
-                return { skip: 'SET_COMPARISON name has a line break in it' };
+                return { skip: 'the comparison name has a line break in it' };
             }
             return { command: `setcomparison ${name}` };
         }
@@ -509,34 +556,49 @@ function planAction(action, run) {
 
 // ------------------------------------------------------------------ the LiveSplit adapter (TCP)
 
+const PHASES = new Set(['NotRunning', 'Running', 'Paused', 'Ended']);
+/** The only answers `getcurrenttimerphase` gives — anything else on the line is not its answer. */
+const isPhase = (line) => PHASES.has(line);
+/** Every action is followed by this getter: its answer marks the end of whatever the action had to say. */
+const BARRIER = 'getcurrenttimerphase';
+
 /** `[Error]: System.Exception: There is no comparison called "X"` -> `There is no comparison called "X"`. */
 function adapterError(line) {
     return new Error(line.replace(/^\[Error\]:?\s*/, '').replace(/^System\.\w+:\s*/, '') || 'GreenSplit refused it');
 }
 
+const closedError = () => Object.assign(new Error('GreenSplit was disconnected'), { code: 'ECLOSED' });
+
 /**
  * One persistent connection to GreenSplit's LiveSplit Server Adapter, with commands sent one at a time.
  *
  * The protocol has no ids: a getter answers one line, an action that works answers nothing, and an action that fails
- * (an unknown comparison, say) answers an `[Error]: …` line. Sending one command at a time — an action waits a short
- * moment for a possible error — is what lets every line be matched to the command it answers.
+ * (an unknown comparison, say) answers an `[Error]: …` line. GreenSplit answers strictly in order, so every action is
+ * sent with `getcurrenttimerphase` straight after it: an `[Error]` before the phase is the action's own, and the phase
+ * means it is done — exact, with no guessing how long an error might take to arrive. A getter takes only an answer it
+ * recognises; an `[Error]` nobody is waiting for is reported as late (`onLateError`), never pinned on the next command.
+ *
+ * `close()` is final for everything already asked: the connection, a connect still in flight and every queued command
+ * are dropped, so nothing reaches the timer after GreenSplit was turned off. Commands asked afterwards connect anew.
  */
 class LiveSplitClient {
     constructor({
-        host, port, connect = net.connect, settleMs = 150, replyTimeoutMs = 2000, connectTimeoutMs = 2000, onClose,
+        host, port, connect = net.connect, replyTimeoutMs = 2000, connectTimeoutMs = 2000, onClose, onLateError,
     }) {
         this.host = host;
         this.port = port;
         this.connectFn = connect;
-        this.settleMs = settleMs;
         this.replyTimeoutMs = replyTimeoutMs;
         this.connectTimeoutMs = connectTimeoutMs;
         this.onClose = onClose || (() => {});
+        this.onLateError = onLateError || (() => {});
         this.socket = null;
         this.opening = null;
         this.buffer = '';
         this.waiter = null;
         this.queue = Promise.resolve();
+        /** Bumped by close(): anything begun under an older generation is abandoned. */
+        this.generation = 0;
     }
 
     /** Connect if not already. Rejects with the socket error (ECONNREFUSED when the adapter is off). */
@@ -547,7 +609,8 @@ class LiveSplitClient {
         if (this.opening) {
             return this.opening;
         }
-        this.opening = new Promise((resolve, reject) => {
+        const generation = this.generation;
+        const opening = new Promise((resolve, reject) => {
             const socket = this.connectFn({ host: this.host, port: this.port });
             const fail = (error) => {
                 clearTimeout(timer);
@@ -561,13 +624,22 @@ class LiveSplitClient {
             socket.once('connect', () => {
                 clearTimeout(timer);
                 socket.removeListener('error', fail);
+                // Closed while this was connecting: the socket belongs to nobody now.
+                if (this.generation !== generation) {
+                    socket.destroy();
+                    reject(closedError());
+                    return;
+                }
                 this.attach(socket);
                 resolve();
             });
         }).finally(() => {
-            this.opening = null;
+            if (this.opening === opening) {
+                this.opening = null;
+            }
         });
-        return this.opening;
+        this.opening = opening;
+        return opening;
     }
 
     attach(socket) {
@@ -598,74 +670,109 @@ class LiveSplitClient {
         });
     }
 
-    /** An action: resolves once GreenSplit has had a moment to object, rejects with its error if it did. */
+    /** An action: resolves with the timer phase after it, rejects with GreenSplit's refusal if it refused. */
     send(command) {
-        return this.enqueue(command, false);
+        return this.enqueue(command, null);
     }
 
-    /** A getter: resolves with GreenSplit's one-line answer. */
-    query(command) {
-        return this.enqueue(command, true);
+    /** A getter: resolves with GreenSplit's one-line answer — the first line `accept` recognises. */
+    query(command, accept) {
+        return this.enqueue(command, accept);
     }
 
-    enqueue(command, expectReply) {
-        const job = this.queue.then(() => this.exchange(command, expectReply));
+    enqueue(command, accept) {
+        const generation = this.generation;
+        const job = this.queue.then(() => this.exchange(command, accept, generation));
         this.queue = job.catch(() => {});
         return job;
     }
 
-    async exchange(command, expectReply) {
+    async exchange(command, accept, generation) {
         if (/[\r\n]/.test(command)) {
             throw new Error('A LiveSplit command is a single line.');
         }
-        await this.open();
+        if (this.generation !== generation) {
+            throw closedError();
+        }
+        try {
+            await this.open();
+        } catch (error) {
+            throw this.generation !== generation ? closedError() : error;
+        }
+        if (this.generation !== generation || !this.socket) {
+            throw closedError();
+        }
+        const action = !accept;
         return new Promise((resolve, reject) => {
+            let refusal = null;
             const timer = setTimeout(() => {
                 this.waiter = null;
-                if (!expectReply) {
-                    resolve(null);
-                    return;
-                }
-                // A late answer would be taken as the next command's, so start the next one on a clean line.
-                this.close();
+                // An answer still on its way would be read as the next command's: start that one on a fresh line.
+                this.dropSocket(new Error('timed out'));
                 reject(new Error(`GreenSplit did not answer ${command}`));
-            }, expectReply ? this.replyTimeoutMs : this.settleMs);
+            }, this.replyTimeoutMs);
             this.waiter = {
-                resolve: (line) => { clearTimeout(timer); resolve(line); },
-                reject: (error) => { clearTimeout(timer); reject(error); },
+                line: (line) => {
+                    if (line.startsWith('[Error]')) {
+                        if (action && !refusal) {
+                            refusal = adapterError(line); // the action's own; its barrier answer follows
+                        } else {
+                            this.onLateError(adapterError(line));
+                        }
+                        return;
+                    }
+                    if (!(action ? isPhase : accept)(line)) {
+                        return; // not the answer asked for
+                    }
+                    clearTimeout(timer);
+                    this.waiter = null;
+                    if (refusal) {
+                        reject(refusal);
+                    } else {
+                        resolve(line);
+                    }
+                },
+                fail: (error) => {
+                    clearTimeout(timer);
+                    reject(error);
+                },
             };
-            this.socket.write(`${command}\r\n`);
+            this.socket.write(action ? `${command}\r\n${BARRIER}\r\n` : `${command}\r\n`);
         });
     }
 
     onLine(line) {
-        const waiter = this.waiter;
-        if (!waiter) {
-            return; // nothing asked; GreenSplit does not volunteer lines, so this is noise
+        if (this.waiter) {
+            this.waiter.line(line);
+        } else if (line.startsWith('[Error]')) {
+            this.onLateError(adapterError(line));
         }
-        this.waiter = null;
-        if (line.startsWith('[Error]')) {
-            waiter.reject(adapterError(line));
-        } else {
-            waiter.resolve(line);
-        }
+        // Any other line nobody asked for is noise: GreenSplit does not volunteer lines.
     }
 
     failWaiter(error) {
         const waiter = this.waiter;
         this.waiter = null;
         if (waiter) {
-            waiter.reject(error);
+            waiter.fail(error);
         }
     }
 
-    close() {
+    dropSocket(error) {
         const socket = this.socket;
         this.socket = null;
-        this.failWaiter(new Error('closed'));
+        this.buffer = '';
+        this.failWaiter(error);
         if (socket) {
             socket.destroy();
         }
+    }
+
+    /** Stop everything already asked: the connection, a connect in flight, and every command waiting or queued. */
+    close() {
+        this.generation += 1;
+        this.opening = null;
+        this.dropSocket(closedError());
     }
 }
 
@@ -675,14 +782,15 @@ class GreenSplitBridge {
     /**
      * @param settings   () => the app settings (greensplitUrl, greensplitLivesplitPort, forwardGreensplitEvents)
      * @param token      () => the access token, or null
-     * @param onGreenSplitEvent  (body) => promise — one trigger for LBCBot; called strictly in order
+     * @param onGreenSplitEvent  (body, { signal }) => promise of { ok, error } — one trigger for LBCBot; called
+     *                     strictly in order, and abandoned (signal aborted) after `postTimeoutMs`
      * @param onConnected  ({ appVersion }) => void — GreenSplit said hello
      */
     constructor({
         settings, token, onLog, onStatus, onGreenSplitEvent, onConnected,
         WebSocketImpl = globalThis.WebSocket, connectTcp = net.connect,
         helloTimeoutMs = HELLO_TIMEOUT_MS, retryMinMs = RETRY_MIN_MS, retryMaxMs = RETRY_MAX_MS,
-        controlProbeMs = CONTROL_PROBE_MS, settleMs,
+        controlProbeMs = CONTROL_PROBE_MS, postTimeoutMs = POST_TIMEOUT_MS, staleMs = STALE_MS, replyTimeoutMs,
     }) {
         this.settings = settings;
         this.token = token;
@@ -696,11 +804,13 @@ class GreenSplitBridge {
         this.retryMinMs = retryMinMs;
         this.retryMaxMs = retryMaxMs;
         this.controlProbeMs = controlProbeMs;
-        this.settleMs = settleMs;
+        this.postTimeoutMs = postTimeoutMs;
+        this.staleMs = staleMs;
+        this.replyTimeoutMs = replyTimeoutMs;
 
         /** The user wants GreenSplit on: keep (re)connecting until they turn it off. */
         this.enabled = false;
-        /** off | connecting | connected | bad-token | unreachable */
+        /** off | connecting | connected | bad-token | unreachable | bad-address */
         this.state = 'off';
         this.connected = false;
         this.appVersion = null;
@@ -715,6 +825,8 @@ class GreenSplitBridge {
         this.tracker = new RunTracker();
         /** Posts go out one after another, so a split's SPLIT, GOLD and PACE reach LBCBot in that order. */
         this.outbox = Promise.resolve();
+        /** Set while posts are failing, so a spell of trouble is one log line, not one per trigger. */
+        this.postTrouble = false;
         this.livesplit = null;
         this.livesplitKey = null;
     }
@@ -748,6 +860,10 @@ class GreenSplitBridge {
             this.setState('off');
             return false;
         }
+        if (!this.addressAllowed()) {
+            this.refuseAddress();
+            return false;
+        }
         this.enabled = true;
         this.retryDelay = this.retryMinMs;
         this.reportedOutage = false;
@@ -778,6 +894,10 @@ class GreenSplitBridge {
         try {
             ws = new this.WebSocketImpl(buildConnectionUrl(greensplitUrl, this.token()));
         } catch (error) {
+            if (error.code === 'ENOTLOCAL') {
+                this.refuseAddress();
+                return;
+            }
             this.onLog(`Could not connect to GreenSplit: ${error.message}`);
             this.scheduleRetry();
             return;
@@ -792,6 +912,27 @@ class GreenSplitBridge {
         ws.onmessage = (message) => this.onMessage(ws, message.data);
         ws.onerror = () => {}; // close follows, and is where it is handled
         ws.onclose = () => this.onSocketGone(ws);
+    }
+
+    /** Whether the saved address is somewhere the token may go (see isLocalHost). */
+    addressAllowed() {
+        try {
+            return isLocalHost(new URL(this.settings().greensplitUrl).hostname);
+        } catch (error) {
+            return false;
+        }
+    }
+
+    /** A saved address outside this computer and network (only a hand-edited settings file gets one): never used. */
+    refuseAddress() {
+        this.enabled = false;
+        this.dropSocket();
+        clearTimeout(this.retryTimer);
+        this.retryTimer = null;
+        this.stopControl();
+        this.onLog('Not connecting to GreenSplit: its saved address is not on this computer or your network. '
+            + 'Paste the Connection URL again.');
+        this.setState('bad-address');
     }
 
     /** Forget the socket without waiting on it: GreenSplit never answers a close on a socket it did not accept. */
@@ -905,9 +1046,43 @@ class GreenSplitBridge {
         if (this.settings().forwardGreensplitEvents === false) {
             return;
         }
-        this.outbox = this.outbox
-            .then(() => this.onGreenSplitEvent(body))
-            .catch((error) => this.onLog(`Could not forward ${body.eventType}: ${error.message}`));
+        const queuedAt = Date.now();
+        this.outbox = this.outbox.then(() => this.post(body, queuedAt));
+    }
+
+    /**
+     * One post, bounded. Posts are strictly in order, so one hung request would otherwise hold every later trigger
+     * behind it for as long as the network takes to give up: each gets `postTimeoutMs`, and a trigger that has already
+     * waited `staleMs` is dropped rather than fired long after the moment it describes.
+     */
+    async post(body, queuedAt) {
+        if (Date.now() - queuedAt > this.staleMs) {
+            this.troubled(`LBCBot is slow to answer — skipping GreenSplit events more than ${Math.round(this.staleMs / 1000)} s old.`);
+            return;
+        }
+        const signal = AbortSignal.timeout(this.postTimeoutMs);
+        let result;
+        try {
+            const pending = Promise.resolve().then(() => this.onGreenSplitEvent(body, { signal }));
+            pending.catch(() => {}); // it may still settle after the timeout; nothing is waiting for it then
+            result = await Promise.race([pending, new Promise((resolve) => {
+                signal.addEventListener('abort', () => resolve({ ok: false, error: 'LBCBot did not answer in time' }), { once: true });
+            })]);
+        } catch (error) {
+            result = { ok: false, error: error.message };
+        }
+        if (result && result.ok === false) {
+            this.troubled(`Could not send ${body.eventType} to LBCBot: ${result.error || result.status}. Later events will still be tried.`);
+            return;
+        }
+        this.postTrouble = false;
+    }
+
+    troubled(line) {
+        if (!this.postTrouble) {
+            this.postTrouble = true;
+            this.onLog(line);
+        }
     }
 
     // ------------------------------------------------------------------ control (LiveSplit adapter)
@@ -917,6 +1092,9 @@ class GreenSplitBridge {
         const settings = this.settings();
         const host = livesplitHost(settings.greensplitUrl);
         const port = livesplitPort(settings.greensplitLivesplitPort);
+        if (!isLocalHost(host)) {
+            throw notLocal();
+        }
         const key = `${host}:${port}`;
         if (!this.livesplit || this.livesplitKey !== key) {
             if (this.livesplit) {
@@ -927,7 +1105,8 @@ class GreenSplitBridge {
                 host,
                 port,
                 connect: this.connectTcp,
-                settleMs: this.settleMs,
+                replyTimeoutMs: this.replyTimeoutMs,
+                onLateError: (error) => this.onLog(`GreenSplit refused an earlier command (answered late): ${error.message}`),
                 // The adapter being switched off in GreenSplit drops the connection: look again shortly.
                 onClose: () => {
                     if (this.livesplit === client && this.connected) {
@@ -960,6 +1139,9 @@ class GreenSplitBridge {
         try {
             await this.adapter().open();
         } catch (error) {
+            if (error.code === 'ECLOSED') {
+                return; // turned off meanwhile
+            }
             available = false;
         }
         // The answer can land after GreenSplit went away or was turned off; it no longer means anything then.
@@ -1041,11 +1223,11 @@ class GreenSplitBridge {
             return;
         }
 
-        const adapter = this.adapter();
         try {
+            const adapter = this.adapter();
             let line = plan.command;
             if (plan.toggle) {
-                const phase = await adapter.query('getcurrenttimerphase');
+                const phase = await adapter.query('getcurrenttimerphase', isPhase);
                 line = pauseCommandFor(phase);
                 if (!line) {
                     this.onLog(`GreenSplit: nothing to pause or resume (the timer is ${phase}).`);
@@ -1056,6 +1238,14 @@ class GreenSplitBridge {
             this.setControl(true);
             this.onLog(`GreenSplit: ${action.type}${line.startsWith('setcomparison ') ? ` (${line.slice(14)})` : ''}`);
         } catch (error) {
+            if (error.code === 'ECLOSED') {
+                this.onLog(`Dropped GreenSplit ${action.type} — GreenSplit was disconnected before it ran.`);
+                return;
+            }
+            if (error.code === 'ENOTLOCAL') {
+                this.onLog(`Ignored GreenSplit ${action.type} — the saved address is not on this computer or your network.`);
+                return;
+            }
             if (error.code === 'ECONNREFUSED' || error.code === 'ETIMEDOUT') {
                 this.onLog(`Could not run GreenSplit ${action.type} — turn on its LiveSplit Server Adapter.`);
                 this.setControl(false);
@@ -1076,6 +1266,7 @@ module.exports = {
     TRIGGERS: T,
     DEFAULT_LIVESPLIT_PORT,
     TIMER_HZ,
+    isLocalHost,
     parseConnectionUrl,
     buildConnectionUrl,
     livesplitHost,

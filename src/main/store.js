@@ -30,6 +30,11 @@ const DEFAULTS = {
      */
     greensplitUrl: '',
     greensplitLivesplitPort: 16834,
+    /**
+     * Whether GreenSplit is on: Connect sets it, Disconnect clears it, so a Disconnect survives a restart instead of
+     * being undone by the launch auto-connect (which needs this AND autoConnectGreensplit).
+     */
+    greensplitEnabled: false,
     // Both only matter once a Connection URL is saved, so true from the start means "on as soon as it is set up".
     autoConnectGreensplit: true,
     forwardGreensplitEvents: true,

@@ -186,6 +186,24 @@ h3 { margin: 0; font-size: 14px; font-weight: 600; }
 .row--actions { margin-top: 12px; }
 .row--after-hint { margin-top: 8px; }
 
+/* An icon-only action at the end of a row (its name is the tooltip). A destructive one turns red on hover. */
+.icon-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 29px;
+    height: 29px; /* the text buttons' height, so a row of both lines up */
+    margin-left: auto;
+    padding: 0;
+    color: var(--muted);
+}
+.icon-btn svg { width: 15px; height: 15px; }
+.icon-btn--danger:hover:not(:disabled) {
+    color: var(--bad);
+    border-color: rgba(248, 113, 113, 0.65);
+    box-shadow: 0 0 0 2px rgba(248, 113, 113, 0.2);
+}
+
 button {
     padding: 6px 14px;
     border: 1px solid var(--line);

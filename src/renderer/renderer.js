@@ -142,6 +142,7 @@ const GS_STATE_TEXT = {
     connecting: 'Connecting…',
     'bad-token': 'Wrong access token',
     unreachable: 'GreenSplit isn\'t running',
+    'bad-address': 'Can\'t use that address',
     off: 'Not connected',
 };
 
@@ -165,7 +166,8 @@ function applyGreenSplitStatus(status) {
     if (!status.configured) text = 'Not set up';
     else if (on) text = status.appVersion ? `Connected · GreenSplit ${status.appVersion}` : 'Connected';
 
-    el('gs-conn-dot').className = `dot ${on ? 'dot--on' : status.state === 'bad-token' ? 'dot--bad' : 'dot--off'}`;
+    const bad = status.state === 'bad-token' || status.state === 'bad-address';
+    el('gs-conn-dot').className = `dot ${on ? 'dot--on' : bad ? 'dot--bad' : 'dot--off'}`;
     el('gs-conn-text').textContent = text;
 
     el('gs-statusline').hidden = !status.configured;
@@ -174,8 +176,9 @@ function applyGreenSplitStatus(status) {
 
     // Connect only when nothing is trying: while it waits for GreenSplit to open it is already retrying on its own
     // (and a pasted URL applies itself). Disconnect whenever it is on, including while it waits.
-    el('gs-connect').hidden = !['off', 'bad-token'].includes(status.state);
-    el('gs-disconnect').hidden = status.state === 'off';
+    el('gs-connect').hidden = !['off', 'bad-token', 'bad-address'].includes(status.state);
+    el('gs-disconnect').hidden = status.state === 'off' || status.state === 'bad-address';
+    el('gs-forget').hidden = !status.configured;
     el('gs-control').hidden = !(on && status.controlAvailable === false);
     // What is saved, token masked, so an empty field still says it is set up — like the OBS password.
     el('gs-url').placeholder = status.configured && status.url
@@ -651,6 +654,11 @@ function wire() {
     // Pasting the Connection URL is the whole setup — no button press needed. Enter or Connect does the same.
     el('gs-connect').addEventListener('click', connectGreenSplit);
     el('gs-disconnect').addEventListener('click', () => window.lbcbot.disconnectGreenSplit());
+    el('gs-forget').addEventListener('click', async () => {
+        await window.lbcbot.forgetGreenSplit();
+        el('gs-url').value = '';
+        setGreenSplitHint(null);
+    });
     el('gs-url').addEventListener('paste', () => setTimeout(connectGreenSplit, 0));
     el('gs-url').addEventListener('keydown', (event) => {
         if (event.key === 'Enter') connectGreenSplit();

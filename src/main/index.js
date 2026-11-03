@@ -935,33 +935,56 @@ function buildServices() {
         onLog: log,
         onStatus: (status) => send('greensplit-status', status),
         onConnected: () => announceGreenSplit(),
-        onGreenSplitEvent: async (event) => {
-            // GreenSplit -> LBCBot. The bridge sends these one at a time, so a split's SPLIT, GOLD and PACE arrive in
-            // that order. Without a credential there is nowhere to send them; saying so on every split would bury the
-            // log, and the Status pane already says LBCBot is not connected.
+        onGreenSplitEvent: async (event, { signal }) => {
+            // GreenSplit -> LBCBot. The bridge sends these one at a time (so a split's SPLIT, GOLD and PACE arrive in
+            // that order), bounds each with `signal`, and logs failures once per spell rather than once per trigger.
+            // Without a credential there is nowhere to send them, and the Status pane already says so.
             if (!store.hasCredential()) {
-                return;
+                return { ok: true };
             }
-            const result = await lbcbot.postGreenSplitEvent(event);
-            if (!result.ok) {
-                log(`Could not forward ${event.eventType}: ${result.error || result.status}`);
-            }
+            return lbcbot.postGreenSplitEvent(event, { signal });
         },
     });
+}
+
+/**
+ * The GreenSplit integration record's PUTs and DELETEs, one at a time in the order they were asked for — so a PUT still
+ * in flight from a hello cannot land after the user's Disconnect and bring the record back. Each step decides when it
+ * runs, not when it was queued, so a PUT queued before a Disconnect finds GreenSplit off and does nothing.
+ */
+let integrationCalls = Promise.resolve();
+function integrationCall(step) {
+    integrationCalls = integrationCalls.then(step).catch((error) => log(`GreenSplit setup call failed: ${error.message}`));
+    return integrationCalls;
 }
 
 /**
  * Tell LBCBot GreenSplit is set up here, so the website shows its triggers and actions. On every hello, and again when
  * LBCBot is connected after GreenSplit already was.
  */
-async function announceGreenSplit() {
-    if (!greensplit || !greensplit.connected || !store.hasCredential()) {
-        return;
-    }
-    const result = await lbcbot.putIntegration('greensplit', { appVersion: greensplit.appVersion || '' });
-    if (!result.ok) {
-        log(`Could not tell LBCBot that GreenSplit is set up: ${result.error || result.status}`);
-    }
+function announceGreenSplit() {
+    return integrationCall(async () => {
+        if (!greensplit || !greensplit.connected || !store.hasCredential()) {
+            return;
+        }
+        const result = await lbcbot.putIntegration('greensplit', { appVersion: greensplit.appVersion || '' });
+        if (!result.ok) {
+            log(`Could not tell LBCBot that GreenSplit is set up: ${result.error || result.status}`);
+        }
+    });
+}
+
+/** Tell LBCBot GreenSplit is off here, so the website stops offering GreenSplit triggers it can no longer fire. */
+function withdrawGreenSplit() {
+    return integrationCall(async () => {
+        if (!store.hasCredential()) {
+            return;
+        }
+        const result = await lbcbot.deleteIntegration('greensplit');
+        if (!result.ok) {
+            log(`Could not tell LBCBot that GreenSplit is off: ${result.error || result.status}`);
+        }
+    });
 }
 
 /** LBCBot -> OBS / GreenSplit. Started once there is a credential, and restarted whenever one is obtained. */
@@ -1026,7 +1049,10 @@ function registerIpc() {
 
     ipcMain.handle('restart-for-update', async () => updater.restartAndInstall());
 
-    ipcMain.handle('update-settings', async (_event, patch) => {
+    ipcMain.handle('update-settings', async (_event, rawPatch) => {
+        // GreenSplit's address and on/off change only through connect/disconnect/forget below: the address is where
+        // the keychain token gets sent, so the renderer never gets to write it unchecked.
+        const { greensplitUrl, greensplitEnabled, ...patch } = rawPatch || {};
         const updated = store.update(patch);
         greensplit.settingsChanged(); // a new LiveSplit adapter port takes effect at once
         await pushState();
@@ -1104,21 +1130,32 @@ function registerIpc() {
         if (!greensplit.configured()) {
             return { ok: false, error: 'Paste the Connection URL from GreenSplit.' };
         }
+        store.update({ greensplitEnabled: true });
         greensplit.connect();
         await pushState();
         return { ok: true };
     });
 
-    /** Turn GreenSplit off — and tell LBCBot, so the website stops offering GreenSplit triggers it can no longer fire. */
+    /**
+     * Turn GreenSplit off, and keep it off across restarts — and tell LBCBot, so the website stops offering GreenSplit
+     * triggers it can no longer fire. The setup stays, so Connect turns it straight back on.
+     */
     ipcMain.handle('disconnect-greensplit', async () => {
+        store.update({ greensplitEnabled: false });
         greensplit.disconnect();
         log('Disconnected from GreenSplit.');
-        if (store.hasCredential()) {
-            const result = await lbcbot.deleteIntegration('greensplit');
-            if (!result.ok) {
-                log(`Could not tell LBCBot that GreenSplit is off: ${result.error || result.status}`);
-            }
-        }
+        await withdrawGreenSplit();
+        await pushState();
+        return true;
+    });
+
+    /** Forget the GreenSplit setup entirely: address and token gone, back to "Not set up". */
+    ipcMain.handle('forget-greensplit', async () => {
+        greensplit.disconnect();
+        store.update({ greensplitUrl: '', greensplitEnabled: false });
+        await store.setGreensplitToken(null);
+        log('Forgot the GreenSplit setup on this computer.');
+        await withdrawGreenSplit();
         await pushState();
         return true;
     });
@@ -1294,8 +1331,9 @@ app.whenReady().then(async () => {
     if (settings.autoConnectObs) {
         await obs.connect();
     }
-    // Not awaited: GreenSplit is often opened after this app, and the bridge keeps trying in the background.
-    if (settings.autoConnectGreensplit && greensplit.configured()) {
+    // Not awaited: GreenSplit is often opened after this app, and the bridge keeps trying in the background. Only if
+    // it was left on: a Disconnect means off until the next Connect, restarts included.
+    if (settings.greensplitEnabled && settings.autoConnectGreensplit && greensplit.configured()) {
         greensplit.connect();
     }
     await pushState();

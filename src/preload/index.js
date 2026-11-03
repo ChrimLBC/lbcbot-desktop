@@ -23,6 +23,7 @@ contextBridge.exposeInMainWorld('lbcbot', {
     // GreenSplit. The pasted Connection URL goes one way: its token is kept in the main process and never sent back.
     connectGreenSplit: (connectionUrl) => ipcRenderer.invoke('connect-greensplit', connectionUrl),
     disconnectGreenSplit: () => ipcRenderer.invoke('disconnect-greensplit'),
+    forgetGreenSplit: () => ipcRenderer.invoke('forget-greensplit'),
 
     getOverlays: () => ipcRenderer.invoke('get-overlays'),
     getScenes: () => ipcRenderer.invoke('get-scenes'),

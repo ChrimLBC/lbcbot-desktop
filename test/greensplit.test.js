@@ -327,6 +327,14 @@ test('every action type maps to its LiveSplit command', () => {
     assert.deepEqual(gs.planAction({ type: 'toString' }, RUN), { unknown: true });
 });
 
+test('SET_COMPARISON trims the name, and does nothing while it is still empty', () => {
+    assert.deepEqual(gs.planAction({ type: 'SET_COMPARISON', comparison: '  Best Segments \t' }, RUN),
+        { command: 'setcomparison Best Segments' });
+    for (const comparison of ['', '   ', '\t', undefined, null]) {
+        assert.ok(gs.planAction({ type: 'SET_COMPARISON', comparison }, RUN).skip, JSON.stringify(comparison));
+    }
+});
+
 test('a comparison name cannot smuggle a second command onto the line', () => {
     assert.ok(gs.planAction({ type: 'SET_COMPARISON', comparison: 'PB\r\nreset' }, RUN).skip);
     assert.ok(gs.planAction({ type: 'SET_COMPARISON', comparison: 'PB\nreset' }, RUN).skip);
@@ -401,13 +409,21 @@ class FakeWebSocket {
 }
 FakeWebSocket.instances = [];
 
-/** A LiveSplit Server Adapter stand-in: records every line, answers the phase, refuses unknown comparisons. */
+/**
+ * A LiveSplit Server Adapter stand-in, answering in order like the real one: records every line, answers the phase,
+ * refuses unknown comparisons. `server.before` is written ahead of the next phase answer (stale lines);
+ * `server.replyDelayMs` holds every answer back.
+ */
 async function stubAdapter(t, { phase = 'Running' } = {}) {
     const lines = [];
     const sockets = new Set();
     const server = net.createServer((socket) => {
         sockets.add(socket);
         let buffer = '';
+        let out = Promise.resolve();
+        const reply = (text) => {
+            out = out.then(() => wait(server.replyDelayMs)).then(() => { if (!socket.destroyed) socket.write(text); });
+        };
         socket.setEncoding('utf8');
         socket.on('data', (chunk) => {
             buffer += chunk;
@@ -416,14 +432,19 @@ async function stubAdapter(t, { phase = 'Running' } = {}) {
                 const line = buffer.slice(0, end);
                 buffer = buffer.slice(end + 2);
                 lines.push(line);
-                if (line === 'getcurrenttimerphase') socket.write(`${server.phase}\r\n`);
+                if (line === 'getcurrenttimerphase') {
+                    reply(`${server.before.splice(0).join('')}${server.phase}\r\n`);
+                }
                 if (line.startsWith('setcomparison ') && line !== 'setcomparison Best Segments' && line !== 'setcomparison None') {
-                    socket.write(`[Error]: System.Exception: There is no comparison called "${line.slice(14)}"\r\n`);
+                    reply(`[Error]: System.Exception: There is no comparison called "${line.slice(14)}"\r\n`);
                 }
             }
         });
     });
     server.phase = phase;
+    server.before = [];
+    server.replyDelayMs = 0;
+    server.inject = (text) => sockets.forEach((socket) => socket.write(text));
     await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
     t.after(() => new Promise((resolve) => {
         sockets.forEach((socket) => socket.destroy());
@@ -464,7 +485,7 @@ function makeBridge(t, overrides = {}) {
         helloTimeoutMs: 30,
         retryMinMs: 20,
         controlProbeMs: 60000,
-        settleMs: 40,
+        replyTimeoutMs: 500,
         ...overrides.options,
     });
     t.after(() => bridge.disconnect());
@@ -572,10 +593,11 @@ test('execute sends each action as its LiveSplit line', async (t) => {
     await bridge.execute(command({ type: 'SET_COMPARISON', comparison: 'Best Segments' }));
     await bridge.execute(command({ type: 'NEXT_COMPARISON' }));
     await bridge.execute(command({ type: 'PREVIOUS_COMPARISON' }));
+    // Every action goes out with the phase getter straight after it: its answer closes the action.
     assert.deepEqual(adapter.lines, [
         'starttimer', 'split', 'startorsplit', 'unsplit', 'skipsplit', 'pause', 'resume', 'reset',
         'setcomparison Best Segments', 'setcomparison Best Segments', 'setcomparison None',
-    ]);
+    ].flatMap((line) => [line, 'getcurrenttimerphase']));
 });
 
 test('TOGGLE_PAUSE asks the phase first, over the stub adapter', async (t) => {
@@ -586,7 +608,9 @@ test('TOGGLE_PAUSE asks the phase first, over the stub adapter', async (t) => {
     adapter.server.phase = 'NotRunning';
     await bridge.execute(command({ type: 'TOGGLE_PAUSE' }));
     assert.deepEqual(adapter.lines, [
-        'getcurrenttimerphase', 'pause', 'getcurrenttimerphase', 'resume', 'getcurrenttimerphase',
+        'getcurrenttimerphase', 'pause', 'getcurrenttimerphase',
+        'getcurrenttimerphase', 'resume', 'getcurrenttimerphase',
+        'getcurrenttimerphase',
     ]);
     assert.ok(logs.some((l) => /nothing to pause or resume \(the timer is NotRunning\)/.test(l)));
 });
@@ -606,7 +630,7 @@ test('GreenSplit\'s refusal is logged in its words; unknown and unreadable actio
     await bridge.execute(command({ type: 'SPLIT' }));
     await bridge.execute(command({ type: 'EXPLODE' }));
     await bridge.execute({ target: 'greensplit', action: '{not json', triggerType: 'CHEER' });
-    assert.deepEqual(adapter.lines, ['setcomparison Nope', 'split']);
+    assert.deepEqual(adapter.lines, ['setcomparison Nope', 'getcurrenttimerphase', 'split', 'getcurrenttimerphase']);
     assert.ok(logs.some((l) => l === 'GreenSplit action SET_COMPARISON failed: There is no comparison called "Nope"'));
     assert.ok(logs.includes('GreenSplit: SPLIT'), 'the next command is not blamed for the error');
     assert.ok(logs.some((l) => /Unknown GreenSplit action type "EXPLODE"/.test(l)));
@@ -633,4 +657,175 @@ test('turned off in the app: actions are ignored', async (t) => {
     await wait(30);
     assert.deepEqual(adapter.lines, []);
     assert.ok(logs.some((l) => /not connected in this app/.test(l)));
+});
+
+test('SET_COMPARISON over the adapter: padded names are trimmed, an empty one sends nothing and logs one line', async (t) => {
+    const { bridge, adapter, logs } = await controlBridge(t);
+    await bridge.execute(command({ type: 'SET_COMPARISON', comparison: '  Best Segments  ' }));
+    const before = logs.length;
+    await bridge.execute(command({ type: 'SET_COMPARISON', comparison: '   ' }));
+    assert.deepEqual(adapter.lines, ['setcomparison Best Segments', 'getcurrenttimerphase']);
+    assert.deepEqual(logs.slice(before), ['Ignored GreenSplit SET_COMPARISON: it has no comparison name yet.']);
+});
+
+// ------------------------------------------------------------------ the token only goes to this computer or network
+
+test('only this computer and the local network are GreenSplit addresses', () => {
+    for (const host of ['localhost', 'LOCALHOST', 'localhost.', '127.0.0.1', '127.9.8.7', '10.0.0.5', '172.16.0.1',
+        '172.31.255.254', '192.168.1.20', '169.254.10.1', '[::1]', '::1', 'fc00::1', 'fd12:3456::1', 'fe80::1',
+        'febf::1', 'gaming-pc.local', 'Gaming-PC.Local']) {
+        assert.equal(gs.isLocalHost(host), true, host);
+    }
+    for (const host of ['', '8.8.8.8', '172.15.255.255', '172.32.0.1', '192.169.0.1', '0.0.0.0', '169.253.0.1',
+        'example.com', 'localhost.example.com', 'local', '.local', '::', '::ffff:7f00:1', '2001:db8::1', 'fec0::1',
+        '[2606:4700::1111]', undefined]) {
+        assert.equal(gs.isLocalHost(host), false, String(host));
+    }
+});
+
+test('a pasted URL elsewhere is refused; local ones are normalised and lose any user:password', () => {
+    for (const url of ['ws://8.8.8.8:16835/v1/events?token=x', 'wss://greensplit.example.com/v1/events?token=x',
+        'ws://127.0.0.1.nip.io:16835/v1/events?token=x']) {
+        const result = gs.parseConnectionUrl(url);
+        assert.equal(result.ok, false, url);
+        assert.match(result.error, /this computer or your home network/);
+    }
+    assert.deepEqual(gs.parseConnectionUrl('ws://127.1:16835/v1/events?token=x'),
+        { ok: true, url: 'ws://127.0.0.1:16835/v1/events', token: 'x' });
+    assert.deepEqual(gs.parseConnectionUrl('ws://me:pw@[::1]:16835/v1/events?token=x'),
+        { ok: true, url: 'ws://[::1]:16835/v1/events', token: 'x' });
+    assert.throws(() => gs.buildConnectionUrl('ws://evil.example:16835/v1/events', 'secret'), { code: 'ENOTLOCAL' });
+});
+
+test('a saved address elsewhere is never connected to, however it got into settings', async (t) => {
+    const { bridge, settings, statuses, logs } = makeBridge(t, { settings: { greensplitUrl: 'ws://203.0.113.9:16835/v1/events' } });
+    assert.equal(bridge.connect(), false);
+    assert.equal(bridge.state, 'bad-address');
+    assert.equal(FakeWebSocket.instances.length, 0);
+    assert.ok(logs.some((l) => /not on this computer or your network/.test(l)));
+    assert.throws(() => bridge.adapter(), { code: 'ENOTLOCAL' });
+
+    // Swapped under a running bridge: the next reconnect builds no socket and sends the token nowhere.
+    settings.greensplitUrl = 'ws://127.0.0.1:16835/v1/events';
+    bridge.connect();
+    FakeWebSocket.instances[0].drop();
+    settings.greensplitUrl = 'ws://203.0.113.9:16835/v1/events';
+    await wait(40);
+    assert.equal(FakeWebSocket.instances.length, 1);
+    assert.equal(bridge.state, 'bad-address');
+    assert.equal(statuses.at(-1), 'bad-address');
+});
+
+// ------------------------------------------------------------------ posts are bounded
+
+test('a hung post holds later triggers for postTimeoutMs at most; stale ones are dropped; one log line', async (t) => {
+    const calls = [];
+    const { bridge, logs } = makeBridge(t, {
+        options: {
+            postTimeoutMs: 50,
+            staleMs: 120,
+            onGreenSplitEvent: (body, { signal }) => { calls.push({ body, signal }); return new Promise(() => {}); },
+        },
+    });
+    const bodies = [1, 2, 3, 4, 5, 6].map((n) => ({ eventType: `GREENSPLIT_SPLIT`, n }));
+    const started = Date.now();
+    bodies.forEach((body) => bridge.emit(body));
+    await bridge.outbox;
+    const took = Date.now() - started;
+    // 1-3 each wait 50 ms; by the time 4 is up it has waited >120 ms, so 4-6 are dropped without a request.
+    assert.deepEqual(calls.map((c) => c.body.n), [1, 2, 3]);
+    assert.ok(took < 250, `drained in ${took} ms`);
+    assert.equal(calls[0].signal.aborted, true);
+    assert.equal(logs.length, 1);
+    assert.match(logs[0], /did not answer in time/);
+});
+
+test('post trouble is logged once per spell: a success re-arms it', async (t) => {
+    let answer = { ok: false, error: 'HTTP 502' };
+    const { bridge, logs } = makeBridge(t, { options: { onGreenSplitEvent: async () => answer } });
+    bridge.emit({ eventType: 'GREENSPLIT_SPLIT' });
+    bridge.emit({ eventType: 'GREENSPLIT_GOLD' });
+    await bridge.outbox;
+    assert.equal(logs.length, 1);
+    assert.match(logs[0], /Could not send GREENSPLIT_SPLIT to LBCBot: HTTP 502/);
+    answer = { ok: true };
+    bridge.emit({ eventType: 'GREENSPLIT_RESET' });
+    await bridge.outbox;
+    answer = { ok: false, error: 'HTTP 503' };
+    bridge.emit({ eventType: 'GREENSPLIT_RUN_STARTED' });
+    await bridge.outbox;
+    assert.equal(logs.length, 2);
+    assert.match(logs[1], /HTTP 503/);
+});
+
+// ------------------------------------------------------------------ the adapter client
+
+function client(t, port, extra = {}) {
+    const late = [];
+    const c = new gs.LiveSplitClient({
+        host: '127.0.0.1', port, replyTimeoutMs: 500, onLateError: (e) => late.push(e.message), ...extra,
+    });
+    t.after(() => c.close());
+    return { c, late };
+}
+
+test('a getter takes only a real answer: stale errors and stray lines before it are skipped, errors reported late', async (t) => {
+    const adapter = await stubAdapter(t, { phase: 'Paused' });
+    const { c, late } = client(t, adapter.port);
+    adapter.server.before.push('[Error]: System.Exception: There is no comparison called "Old"\r\n', '-\r\n');
+    assert.equal(await c.query('getcurrenttimerphase', (l) => ['NotRunning', 'Running', 'Paused', 'Ended'].includes(l)), 'Paused');
+    assert.deepEqual(late, ['There is no comparison called "Old"']);
+    // An error nobody is waiting for is late too, not the next command's.
+    adapter.server.inject('[Error]: System.Exception: Unrecognized command: "x"\r\n');
+    await wait(30);
+    assert.equal(late.length, 2);
+    assert.equal(await c.send('split'), 'Paused');
+});
+
+test('an action\'s refusal is its own: the phase getter after it marks where its answer ends', async (t) => {
+    const adapter = await stubAdapter(t);
+    const { c, late } = client(t, adapter.port);
+    await assert.rejects(c.send('setcomparison Nope'), /There is no comparison called "Nope"/);
+    assert.equal(await c.send('split'), 'Running');
+    assert.deepEqual(late, []);
+});
+
+test('close() drops the command waiting and every one queued: none reaches the timer afterwards', async (t) => {
+    const adapter = await stubAdapter(t);
+    adapter.server.replyDelayMs = 100;
+    const { c } = client(t, adapter.port);
+    const first = c.send('split');
+    const queued = [c.send('reset'), c.send('starttimer')];
+    await wait(40); // the first is on the wire, waiting for its answer
+    c.close();
+    await assert.rejects(first, { code: 'ECLOSED' });
+    for (const job of queued) await assert.rejects(job, { code: 'ECLOSED' });
+    await wait(150);
+    assert.deepEqual(adapter.lines, ['split', 'getcurrenttimerphase']);
+    // Asked after the close, a command connects anew.
+    adapter.server.replyDelayMs = 0;
+    assert.equal(await c.send('pause'), 'Running');
+});
+
+test('close() during a connect: the socket that arrives late is destroyed and never written to', async (t) => {
+    const { EventEmitter } = require('node:events');
+    const sockets = [];
+    const connect = () => {
+        const socket = new EventEmitter();
+        socket.written = [];
+        socket.destroyed = false;
+        socket.write = (text) => socket.written.push(text);
+        socket.destroy = () => { socket.destroyed = true; };
+        socket.setEncoding = () => {};
+        sockets.push(socket);
+        return socket;
+    };
+    const { c } = client(t, 1, { connect });
+    const job = c.send('reset');
+    await wait(5);
+    c.close();
+    sockets[0].emit('connect');
+    await assert.rejects(job, { code: 'ECLOSED' });
+    assert.equal(sockets[0].destroyed, true);
+    assert.deepEqual(sockets[0].written, []);
 });

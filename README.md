@@ -58,10 +58,14 @@ client are all tested directly (`test/greensplit.test.js`, replaying a recorded 
 1. In GreenSplit: **WebSocket Server → Enable WebSocket event server**, then **Copy Connection URL**.
 2. Paste it into the GreenSplit card on the Status pane. That is the whole setup — no button needed. The address goes
    into settings and the `token` in it into the keychain, like the OBS password; the field then shows the saved URL
-   with the token masked.
+   with the token masked. Only an address on this computer or the local network is accepted (see Security model).
 3. To let LBCBot drive the timer too: **LiveSplit Server Adapter → Enable LiveSplit Server Adapter**. It listens on
    16834 on the same host as the Connection URL; the card asks for the port only when it cannot reach the adapter,
    which is the only time the port can be the problem.
+
+**Disconnect** turns GreenSplit off until the next Connect, restarts included (`greensplitEnabled`; the launch
+auto-connect needs it as well as "Connect to GreenSplit on launch"). The bin icon forgets the setup entirely —
+address and token — back to "Not set up"; pasting the URL again undoes it.
 
 GreenSplit is often opened after this app, so the bridge keeps retrying (2 s, doubling to 30 s) and logs one line per
 outage, not one per attempt. A wrong token is silent on GreenSplit's side — the socket opens and nothing is ever sent —
@@ -69,7 +73,9 @@ so no `hello` within 5 s shows as **Wrong access token**, and that is not retrie
 
 **GreenSplit → LBCBot** — events become triggers, posted to `POST /api/users/greensplit/event`, one post per trigger
 type and strictly in order (a gold split posts `SPLIT`, then `GOLD`, then any pace change). Times are integer
-nanoseconds; the API formats them. Gated by **Send GreenSplit events to LBCBot** in Settings.
+nanoseconds; the API formats them. Gated by **Send GreenSplit events to LBCBot** in Settings. Each post gets 8 s, so
+one hung request cannot hold the triggers behind it for long, and a trigger that has waited 30 s is dropped rather
+than fired long after the moment it describes; a spell of failures is one log line.
 
 | Trigger | Fires on |
 |---|---|
@@ -95,9 +101,10 @@ only for that live check.
 event only comes at the reset afterwards and never for a first-ever completion. A first completion has no
 `previousBestNs`.
 
-Every GreenSplit `hello` also calls `PUT /api/users/integrations/greensplit {appVersion}`, and **Disconnect** calls
-`DELETE` — so the website only offers GreenSplit triggers and actions to someone whose GreenSplit can fire them.
-Quitting the app is not turning GreenSplit off and tells LBCBot nothing.
+Every GreenSplit `hello` also calls `PUT /api/users/integrations/greensplit {appVersion}`, and **Disconnect** (or
+forgetting the setup) calls `DELETE` — so the website only offers GreenSplit triggers and actions to someone whose
+GreenSplit can fire them. The PUTs and DELETEs go out one at a time in the order asked, so a PUT still in flight can
+never land after a Disconnect. Quitting the app is not turning GreenSplit off and tells LBCBot nothing.
 
 **LBCBot → GreenSplit** — a trigger's `greensplitAction` arrives on the same `/topic/deviceControl/{userId}` as the OBS
 actions, with `target: "greensplit"` (OBS commands have no target, and a missing target still means OBS —
@@ -115,15 +122,27 @@ actions, with `target: "greensplit"` (OBS commands have no target, and a missing
 
 Like the OBS actions, the action is an opaque JSON string the server never parses: unknown types are logged and
 ignored. A command fired by a `GREENSPLIT_*` trigger is ignored outright — a split that fires a trigger that splits
-would run the timer away. The adapter answers nothing to an action that works but an `[Error]: …` line to one that
-fails (an unknown comparison, say); sending one command at a time is what lets that error be logged against the right
-action.
+would run the timer away. A comparison name is trimmed, and one still empty (saved mid-typing) sends nothing.
+
+The adapter answers nothing to an action that works but an `[Error]: …` line to one that fails (an unknown
+comparison, say), and it answers strictly in order. So every action goes out with `getcurrenttimerphase` straight
+after it: an error before the phase is that action's, and the phase means it is done — exact, with no timing guess. A
+getter takes only an answer it recognises (a phase is `NotRunning|Running|Paused|Ended`); an error nobody is waiting
+for is logged as late, never against the next command. Disconnecting (or GreenSplit closing) drops any command still
+waiting or queued, and a connect still in flight, so nothing reaches the timer after GreenSplit is off.
 
 ## Security model
 
 - The credential, the OBS password and the GreenSplit access token are encrypted with Electron's **`safeStorage`** (OS
   keychain). Not `keytar` — that is an unmaintained native module needing a rebuild per Electron version, for no extra
   protection. A settings update from the renderer cannot write any of them.
+- **The GreenSplit token only goes to this computer or the local network**: localhost, `127.0.0.0/8`, `::1`, the
+  private and link-local ranges (`10/8`, `172.16/12`, `192.168/16`, `169.254/16`, `fc00::/7`, `fe80::/10`) and `.local`
+  names. The host is checked when a Connection URL is pasted and again every time the connection URL is built, so an
+  address that reached settings any other way (a hand-edited file) is refused with "Can't use that address", and the
+  LiveSplit adapter (same host) is refused with it. The renderer cannot write the saved address or the on/off flag at
+  all; only a pasted, checked URL changes it. The checks are by host *name*: a `.local` name is trusted to resolve on
+  the local network.
 - `contextIsolation: true`, `nodeIntegration: false`, and the renderer's entire capability is the verb list in
   `src/preload/index.js`. It holds no credential, makes no API calls and never touches OBS or GreenSplit; a pasted
   Connection URL goes in once and its token never comes back out.
