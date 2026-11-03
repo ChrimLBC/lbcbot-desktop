@@ -157,12 +157,15 @@ npm start          # launches the app (needs a display)
 npm run dist       # build installers for the current platform
 ```
 
-Two environment traps, both of which look like the app is broken when it is not:
+Three environment traps, all of which look like the app is broken (or worse) when it is not:
 
 - **Do not launch from a VS Code integrated terminal.** VS Code exports `ELECTRON_RUN_AS_NODE=1`, which makes
   Electron start as plain Node — `require('electron')` then returns a path string instead of the API and the app
   dies on `Cannot read properties of undefined (reading 'whenReady')`. Use a normal terminal, or
   `env -u ELECTRON_RUN_AS_NODE npm start`.
+- **Running from source beside an installed copy raises a macOS keychain prompt** — a different Electron binary asking
+  for the installed app's "LBCBot Safe Storage" item. Give the source run its own name and data folder:
+  `LBCBOT_DEV_APP_NAME="LBCBot Dev" LBCBOT_DEV_USER_DATA=/tmp/lbcbot-dev npm start` (both ignored when packaged).
 - **Electron is on the 45 line** (macOS 27 dev machine). Chromium dropped old macOS releases, so raise it only after checking the minimum macOS it supports.
 
 ## Dashboards in their own windows

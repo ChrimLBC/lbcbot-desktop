@@ -10,6 +10,19 @@ const { GreenSplitBridge, parseConnectionUrl } = require('./greensplit');
 const { routeDeviceCommand } = require('./devicecontrol');
 const { Updater } = require('./updater');
 
+/*
+ * Dev only: run from source beside an installed copy without touching it. A different Electron binary reading the
+ * installed app's keychain item ("LBCBot Safe Storage") raises a macOS keychain prompt, so a source run can take its
+ * own name — which names its own keychain item — and its own data folder. Must run before 'ready' (the keychain name is
+ * read then). A packaged build ignores both, like LBCBOT_API_URL.
+ */
+if (!app.isPackaged && process.env.LBCBOT_DEV_APP_NAME) {
+    app.setName(process.env.LBCBOT_DEV_APP_NAME);
+    if (process.env.LBCBOT_DEV_USER_DATA) {
+        app.setPath('userData', process.env.LBCBOT_DEV_USER_DATA);
+    }
+}
+
 /**
  * Main process: owns every connection (LBCBot, OBS, GreenSplit) and relays between them.
  *
