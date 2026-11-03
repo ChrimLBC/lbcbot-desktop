@@ -183,6 +183,12 @@ API** for:
 - **Raid Now** — `POST /helix/raids` starts the 90-second countdown and there is no parameter or endpoint to
   skip it. Pressing Raid Now in the embedded backstage is the only way to raid immediately.
 
+The Twitch cards need Twitch's own website sign-in, once per install. The credential that connects this app to
+LBCBot is not a Twitch web session and cannot stand in for one. Until that sign-in happens, each card keeps a signed-out
+Twitch page loaded out of sight, and those pages ask for a passkey by themselves as soon as they load. Left alone, that
+locks the dashboard behind a Windows dialog, so passkeys are switched off on twitch.tv in this app (`src/main/twitchPasskeys.js`).
+**Sign in to Twitch with a password here; passkeys do not work.**
+
 ## Releasing, and how an installed copy updates itself
 
 Tag and push; the Windows workflow does the rest.

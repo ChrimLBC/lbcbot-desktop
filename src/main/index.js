@@ -9,6 +9,7 @@ const { ObsBridge } = require('./obs');
 const { GreenSplitBridge, parseConnectionUrl } = require('./greensplit');
 const { routeDeviceCommand } = require('./devicecontrol');
 const { Updater } = require('./updater');
+const { applyTwitchPasskeyPolicy } = require('./twitchPasskeys');
 
 /*
  * Dev only: run from source beside an installed copy without touching it. A different Electron binary reading the
@@ -1329,6 +1330,8 @@ app.whenReady().then(async () => {
     applySessionUserAgent();
     // Same timing requirement, same reason: a handler set after a WebContents exists does not govern it.
     applyPermissionPolicy();
+    // Before any window can load Twitch: one signed-out page is enough to lock a dashboard behind a Windows dialog.
+    applyTwitchPasskeyPolicy(session.fromPartition(DASHBOARD_PARTITION));
     // Before any dashboard window loads, so none reads the storage being cleared.
     await scrubDashboardStorage();
     registerPickerIpc();
