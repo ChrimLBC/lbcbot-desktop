@@ -23,9 +23,10 @@
  *
  * <h3>Who may still ask</h3>
  *
- * The Twitch sign-in window, while it is signing someone in, and only its page. Someone is there for exactly this, so
- * the dialog is a choice, and Cancel leaves them on the login form. A header cannot tell an unprompted request from one
- * a person asked for, so that login page raises the dialog by itself as soon as it loads. Everything else stays refused,
+ * The Twitch sign-in window, while it is signing someone in and in front, and only its page. Someone is there for
+ * exactly this, so the dialog is a choice, and Cancel leaves them on the login form. A header cannot tell an unprompted
+ * request from one a person asked for, so that login page raises the dialog by itself as soon as it loads. Which window
+ * the dialog disables is Windows' answer, not this file's: not yet tested. Everything else stays refused,
  * other top-level windows included: a card can be out of sight, and a popped-out card can sit behind OBS when Twitch
  * ends its session mid-stream. Only twitch.tv is covered: it is the one site seen doing this, and a Google consent popup
  * may legitimately want a passkey.

@@ -871,9 +871,13 @@ function watchBackstageSignIn(guest) {
     guest.once('destroyed', () => backstageGuests.delete(guest));
 }
 
-/** The one window that may ask for a passkey (see twitchPasskeys.js). */
+/**
+ * The one window that may ask for a passkey (see twitchPasskeys.js), and only while it is in front. It can open with no
+ * press, behind a game or OBS, and a system dialog must not come up over those: it shows its login form instead.
+ */
 function isTwitchSignInWindow(webContentsId) {
-    return twitchSignInPending && !!twitchWindow && !twitchWindow.isDestroyed() && twitchWindow.webContents.id === webContentsId;
+    return twitchSignInPending && !!twitchWindow && !twitchWindow.isDestroyed() && twitchWindow.isFocused()
+        && twitchWindow.webContents.id === webContentsId;
 }
 
 /**
