@@ -467,9 +467,10 @@ const windowOpenPolicy = ({ url: target }) => {
             },
         };
     }
-    // A dashboard card's "Sign in to Twitch" button. Opened as THE sign-in window, so it closes itself and every
-    // card reloads the moment Twitch accepts the login (see watchTwitchSessionCookie).
-    if (/^https:\/\/www\.twitch\.tv\/login\/?(\?|$)/i.test(target || '')) {
+    // A dashboard card's "Sign in to Twitch" button, or a dashboard that opened signed out asking on its own. Opened
+    // as THE sign-in window, so it closes itself and every card reloads the moment Twitch accepts the login (see
+    // watchTwitchSessionCookie).
+    if (sites.isTwitchLoginPage(target)) {
         openTwitchSignIn();
         return { action: 'deny' };
     }
@@ -860,19 +861,29 @@ async function twitchSignedIn() {
 /**
  * Track a backstage webview so a completed sign-in can reload it.
  *
- * Deliberately does NOT open the sign-in window by itself. It used to, on every signed-out load, which put a
+ * Deliberately does NOT open the sign-in window from here. It used to, on every signed-out load, which put a
  * window on screen next to each card's own Twitch login form — several login forms, only one of which worked.
- * Now a signed-out card shows a single "Sign in to Twitch" button (frontend), and that click is the only thing
- * that opens the window (see windowOpenPolicy).
+ * Now a signed-out card shows a single "Sign in to Twitch" button, and the web app asks for the window (see
+ * windowOpenPolicy): on that click, and once per dashboard window when it opens signed out (offerTwitchSignIn).
  */
 function watchBackstageSignIn(guest) {
     backstageGuests.add(guest);
     guest.once('destroyed', () => backstageGuests.delete(guest));
 }
 
-/** The card's sign-in button: one window, focused if already open so a second click cannot wipe a half-typed login. */
+/** The one window that may ask for a passkey (see twitchPasskeys.js). */
+function isTwitchSignInWindow(webContentsId) {
+    return twitchSignInPending && !!twitchWindow && !twitchWindow.isDestroyed() && twitchWindow.webContents.id === webContentsId;
+}
+
+/**
+ * The card's sign-in button, and the offer a dashboard makes when it opens signed out: one window, focused if already
+ * open so nothing can wipe a half-typed login, including a login page the Twitch window reached by itself.
+ */
 function openTwitchSignIn() {
-    if (twitchSignInPending && twitchWindow && !twitchWindow.isDestroyed()) {
+    if (twitchWindow && !twitchWindow.isDestroyed()
+        && (twitchSignInPending || sites.isTwitchLoginPage(twitchWindow.webContents.getURL()))) {
+        twitchSignInPending = true;
         twitchWindow.focus();
         return;
     }
@@ -1337,7 +1348,7 @@ app.whenReady().then(async () => {
     // Same timing requirement, same reason: a handler set after a WebContents exists does not govern it.
     applyPermissionPolicy();
     // Before any window can load Twitch: one signed-out page is enough to lock a dashboard behind a Windows dialog.
-    applyTwitchPasskeyPolicy(session.fromPartition(DASHBOARD_PARTITION));
+    applyTwitchPasskeyPolicy(session.fromPartition(DASHBOARD_PARTITION), isTwitchSignInWindow);
     // Before any dashboard window loads, so none reads the storage being cleared.
     await scrubDashboardStorage();
     registerPickerIpc();
@@ -1395,6 +1406,10 @@ app.whenReady().then(async () => {
 // opposite things for whether it should come back next launch. See the window's close handler.
 app.on('before-quit', () => {
     isQuitting = true;
+    // A passkey dialog left open holds the app up, and that window can't be closed behind it. Its page going ends it.
+    if (twitchWindow && !twitchWindow.isDestroyed()) {
+        twitchWindow.destroy();
+    }
 });
 
 // The bridge is only useful while running, and a streamer closing the window means they are done with it — so quit

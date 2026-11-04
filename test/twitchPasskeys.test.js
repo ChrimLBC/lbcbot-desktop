@@ -7,7 +7,7 @@ const { applyTwitchPasskeyPolicy, withPasskeysOff } = require('../src/main/twitc
 const POLICY = 'publickey-credentials-get=()';
 
 /** A session that hands back the listener applyTwitchPasskeyPolicy registers. */
-function register() {
+function register(isSignInWindow = () => false) {
     const seen = {};
     applyTwitchPasskeyPolicy({
         webRequest: {
@@ -16,7 +16,7 @@ function register() {
                 seen.listener = listener;
             },
         },
-    });
+    }, isSignInWindow);
     return seen;
 }
 
@@ -53,6 +53,30 @@ test('page and iframe documents get the policy', () => {
         listener({ resourceType, responseHeaders: {} }, (value) => { answer = value; });
         assert.deepEqual(answer, { responseHeaders: { 'Permissions-Policy': [POLICY] } });
     }
+});
+
+const SIGN_IN_WINDOW = 7;
+const answerFor = (details) => {
+    let answer;
+    register((id) => id === SIGN_IN_WINDOW).listener({ responseHeaders: {}, ...details }, (value) => { answer = value; });
+    return answer;
+};
+const REFUSED = { responseHeaders: { 'Permissions-Policy': [POLICY] } };
+
+test('the sign-in window\'s page may ask', () => {
+    assert.deepEqual(answerFor({ resourceType: 'mainFrame', webContentsId: SIGN_IN_WINDOW }), {});
+});
+
+test('any other window or card may not, even at the top of its own window', () => {
+    assert.deepEqual(answerFor({ resourceType: 'mainFrame', webContentsId: 8 }), REFUSED);
+});
+
+test('a frame inside the sign-in window may not ask', () => {
+    assert.deepEqual(answerFor({ resourceType: 'subFrame', webContentsId: SIGN_IN_WINDOW }), REFUSED);
+});
+
+test('a request that cannot say whose it is may not ask', () => {
+    assert.deepEqual(answerFor({ resourceType: 'mainFrame' }), REFUSED);
 });
 
 test('anything else passes through untouched', () => {

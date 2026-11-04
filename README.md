@@ -186,8 +186,8 @@ API** for:
 The Twitch cards need Twitch's own website sign-in, once per install. The credential that connects this app to
 LBCBot is not a Twitch web session and cannot stand in for one. Until that sign-in happens, each card keeps a signed-out
 Twitch page loaded out of sight, and those pages ask for a passkey by themselves as soon as they load. Left alone, that
-locks the dashboard behind a Windows dialog, so passkeys are switched off on twitch.tv in this app (`src/main/twitchPasskeys.js`).
-**Sign in to Twitch with a password here; passkeys do not work.**
+locks the dashboard behind a Windows dialog, so cards may not ask (`src/main/twitchPasskeys.js`). The sign-in window may,
+and it opens by itself when a dashboard opens signed out: **use a passkey there, or cancel it and log in on the form.**
 
 Some actions need a person to confirm it's them: approving a device, connecting a platform, the donation PayPal, roles,
 deleting the account. This app can't, because the API refuses an app's credential for them outright (`Sessions.Recent`).

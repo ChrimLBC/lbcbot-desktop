@@ -85,4 +85,12 @@ function browserTarget(target) {
     }
 }
 
-module.exports = { DEFAULT_SITE_URL, DEFAULT_API_URL, SITE_HOSTS, resolveEndpoints, stripEndpointSettings, isSiteHost, browserTarget };
+/** Twitch's login page: where a dashboard card's sign-in button points, and where a sign-in ends up typing. */
+function isTwitchLoginPage(target) {
+    return /^https:\/\/www\.twitch\.tv\/login\/?(\?|$)/i.test(target || '');
+}
+
+module.exports = {
+    DEFAULT_SITE_URL, DEFAULT_API_URL, SITE_HOSTS, resolveEndpoints, stripEndpointSettings, isSiteHost, browserTarget,
+    isTwitchLoginPage,
+};

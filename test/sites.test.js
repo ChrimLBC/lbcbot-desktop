@@ -74,3 +74,12 @@ test('a dev override host is ours as well as the production hosts', () => {
     assert.equal(s.isSiteHost('lbcbot.com', 'http://localhost:3000'), true);
     assert.equal(s.isSiteHost('localhost:3001', 'http://localhost:3000'), false);
 });
+
+test('isTwitchLoginPage: the login page only, with or without a query', () => {
+    for (const url of ['https://www.twitch.tv/login', 'https://www.twitch.tv/login/', 'https://www.twitch.tv/login?client_id=x']) {
+        assert.equal(s.isTwitchLoginPage(url), true, url);
+    }
+    for (const url of ['https://www.twitch.tv/loginfoo', 'https://dashboard.twitch.tv/login', 'http://www.twitch.tv/login', 'https://evil.example/https://www.twitch.tv/login', '', undefined]) {
+        assert.equal(s.isTwitchLoginPage(url), false, String(url));
+    }
+});
