@@ -10,6 +10,7 @@ const { GreenSplitBridge, parseConnectionUrl } = require('./greensplit');
 const { routeDeviceCommand } = require('./devicecontrol');
 const { Updater } = require('./updater');
 const { applyTwitchPasskeyPolicy } = require('./twitchPasskeys');
+const { keepChatOnRaid } = require('./raidChat');
 
 /*
  * Dev only: run from source beside an installed copy without touching it. A different Electron binary reading the
@@ -1390,6 +1391,12 @@ app.whenReady().then(async () => {
         }
     });
 });
+
+// Twitch's raid banner sends a chat page to the raided channel: the streamer's chat pop-out stays put wherever it is
+// open — a card's webview, a card or a whole dashboard popped out, the Twitch window — so every page this app ever
+// hosts gets the guard, not a list of them that a new kind of window would miss. It looks at addresses only, so it
+// does nothing anywhere else.
+app.on('web-contents-created', (_event, contents) => keepChatOnRaid(contents, log));
 
 // Distinguishes "the user closed this dashboard" from "the app is shutting down with it open" — the two mean
 // opposite things for whether it should come back next launch. See the window's close handler.
