@@ -211,6 +211,10 @@ const PLATFORM_LABELS = { TWITCH: 'Twitch', YOUTUBE: 'YouTube' };
 const ICON = {
     check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>',
     trash: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>',
+    // The platform marks the website's account menu uses (PrimeIcons 7 pi-twitch / pi-youtube), drawn inline: the
+    // pane's CSP allows no icon font.
+    twitch: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M11.706 7.144H12.874V10.568H11.706M14.916 7.144H16.084V10.568H14.916M7.91599 4L5 6.856V17.144H8.49592V20L11.4201 17.144H13.748L19 12V4M17.832 11.432L15.5041 13.712H13.168L11.126 15.712V13.712H8.49592V5.144H17.832V11.432Z"/></svg>',
+    youtube: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M19.67,8.14a2,2,0,0,0-1.42-1.43A48.44,48.44,0,0,0,12,6.38a48.44,48.44,0,0,0-6.25.33A2,2,0,0,0,4.33,8.14,21.27,21.27,0,0,0,4,12a21.42,21.42,0,0,0,.33,3.88,2,2,0,0,0,1.42,1.4,48.44,48.44,0,0,0,6.25.33,48.44,48.44,0,0,0,6.25-.33,2,2,0,0,0,1.42-1.4A21.42,21.42,0,0,0,20,12,21.27,21.27,0,0,0,19.67,8.14Zm-9.31,6.25V9.63L14.55,12l-4.19,2.38Z"/></svg>',
     plus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><line x1="19" y1="8" x2="19" y2="14"/><line x1="22" y1="11" x2="16" y2="11"/></svg>',
 };
 // One account's name before LBCBot has told us (an account carried over from before the list, until its first read).
@@ -231,7 +235,7 @@ function renderAccounts() {
     const { accounts, full, adding } = accountState;
     const list = el('lbc-accounts');
     list.replaceChildren();
-    // A platform tag only says something when the accounts are on more than one platform.
+    // A platform mark only says something when the accounts are on more than one platform (as on the website).
     const platforms = new Set(accounts.map((r) => r.platform).filter(Boolean));
     accounts.forEach((row) => {
         const li = document.createElement('li');
@@ -265,11 +269,15 @@ function renderAccounts() {
         }
         main.append(avatar, text);
 
-        if (platforms.size > 1 && PLATFORM_LABELS[row.platform]) {
-            const tag = document.createElement('span');
-            tag.className = `tag tag--${row.platform.toLowerCase()}`;
-            tag.textContent = PLATFORM_LABELS[row.platform];
-            main.append(tag);
+        if (platforms.size > 1 && PLATFORM_LABELS[row.platform] && ICON[row.platform.toLowerCase()]) {
+            const mark = document.createElement('span');
+            const key = row.platform.toLowerCase();
+            mark.className = `account__platform account__platform--${key}`;
+            mark.title = PLATFORM_LABELS[row.platform];
+            mark.setAttribute('role', 'img');
+            mark.setAttribute('aria-label', PLATFORM_LABELS[row.platform]);
+            mark.innerHTML = ICON[key];
+            main.append(mark);
         }
         const state = document.createElement('span');
         state.className = 'account__state';

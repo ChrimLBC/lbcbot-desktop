@@ -590,7 +590,13 @@ button:focus-visible { outline: 2px solid rgba(var(--accent-rgb), 0.6); outline-
 .account__name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13.5px; }
 .account--out .account__name { color: var(--muted); }
 .account__sub { color: var(--muted); font-size: 11.5px; }
-.account__main .tag { margin-left: 0; }
+.account__platform { display: inline-flex; flex: 0 0 auto; }
+.account__platform svg { width: 16px; height: 16px; }
+/* The website menu's brand colours (AccountSwitcher.scss). */
+.account__platform--twitch { color: #9146ff; }
+.account__platform--youtube { color: #ff3b3b; }
+/* Muted with the avatar and name on a signed-out row. */
+.account--out .account__platform { opacity: 0.55; }
 .account__state { display: inline-flex; flex: 0 0 18px; justify-content: center; color: var(--accent); }
 .account__state svg { width: 16px; height: 16px; }
 .account__remove { margin-left: 0; flex: 0 0 auto; }

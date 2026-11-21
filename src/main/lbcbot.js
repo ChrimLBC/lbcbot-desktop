@@ -173,6 +173,11 @@ class LbcBot {
     /** `signal` (optional) abandons the call — a caller that cannot wait long gives one. */
     async request(method, path, body, { retrying = false, signal, generation = this.generation } = {}) {
         const token = await this.token();
+        if (generation !== this.generation) {
+            // The account changed while this waited for its token, and token() follows a switch: the token it got is
+            // the new account's. A call made as one account is never sent as another.
+            return { ok: false, status: 0, error: 'account_changed' };
+        }
         if (!token) {
             return { ok: false, status: 0, error: 'not_connected' };
         }
@@ -194,6 +199,11 @@ class LbcBot {
                 return this.request(method, path, body, { retrying: true, signal, generation });
             }
             const text = await response.text();
+            if (method === 'GET' && generation !== this.generation) {
+                // Read as the account switched away from: its answer must not be drawn as the new account's. (A write
+                // keeps its real outcome: it was done, as the account that asked.)
+                return { ok: false, status: response.status, error: 'account_changed' };
+            }
             if (!response.ok) {
                 return { ok: false, status: response.status, error: text };
             }
