@@ -2,11 +2,12 @@
 
 const { shell } = require('electron');
 const store = require('./store');
+const { MAX_ACCOUNTS } = require('./accounts');
 
 /**
  * LBCBot API client for the desktop app, plus the STOMP subscription that receives OBS and GreenSplit commands.
  *
- * Same credential model as the Stream Deck plugin: a long-lived opaque `lbc_dk_...` credential from the
+ * Same credential model as the Stream Deck plugin: a long-lived opaque `lbc_dk_...` credential per account from the
  * device-authorization grant, exchanged at `POST /api/token` for a short-lived JWT. The credential goes in the
  * request BODY of that call — the path is permitAll, but Spring still rejects an `Authorization: Bearer` value it
  * cannot decode as a JWT, and an opaque credential never is.
@@ -16,6 +17,12 @@ const store = require('./store');
 
 const REFRESH_MARGIN_MS = 60_000;
 
+/**
+ * Several accounts (2026-11-20): the app holds one credential per account (store.js, accounts.js) and works as the
+ * ACTIVE one. Everything here — the cached token, the STOMP subscription, every call — is that account's. A switch
+ * (`useAccount`) drops the cached token and bumps `generation`, so an exchange still in flight for the account left
+ * behind can never be taken as the new one's.
+ */
 class LbcBot {
     constructor({ onLog }) {
         this.onLog = onLog || (() => {});
@@ -25,6 +32,9 @@ class LbcBot {
         this.stompClient = null;
         this.onDeviceCommand = null;
         this.inFlightExchange = null;
+        this.generation = 0;
+        this.adding = null;
+        this.addStarting = null;
     }
 
     baseUrl() {
@@ -35,13 +45,19 @@ class LbcBot {
         if (this.accessToken && Date.now() < this.tokenExpiresAt - REFRESH_MARGIN_MS) {
             return this.accessToken;
         }
-        if (this.inFlightExchange) {
-            return this.inFlightExchange;
+        const generation = this.generation;
+        if (!this.inFlightExchange) {
+            const exchange = this.exchange().finally(() => {
+                if (this.inFlightExchange === exchange) {
+                    this.inFlightExchange = null;
+                }
+            });
+            this.inFlightExchange = exchange;
         }
-        this.inFlightExchange = this.exchange().finally(() => {
-            this.inFlightExchange = null;
-        });
-        return this.inFlightExchange;
+        // Every caller, the one that started the exchange or one that joined it: the account changed while it was out,
+        // so its answer is the old account's (or null): ask again as the new one.
+        const token = await this.inFlightExchange;
+        return generation === this.generation ? token : this.token();
     }
 
     /**
@@ -74,11 +90,11 @@ class LbcBot {
         };
     }
 
-    async exchange() {
-        const credential = store.getCredential();
-        if (!credential) {
-            return null;
-        }
+    /**
+     * Trade a credential for a token at `POST /api/token`: `{ ok, token, expiresIn, userId }`, `{ refused: true }` when
+     * LBCBot no longer takes it, or `{}` when it could not be reached.
+     */
+    async exchangeCredential(credential) {
         try {
             const response = await fetch(`${this.baseUrl()}/api/token`, {
                 method: 'POST',
@@ -86,27 +102,76 @@ class LbcBot {
                 body: JSON.stringify({ token: credential }),
             });
             if (!response.ok) {
-                if (response.status === 401) {
-                    // Revoked or rotated in the dashboard. Clear it so the UI asks for a reconnect instead of
-                    // hammering a credential that can never work again.
-                    this.onLog('LBCBot credential was rejected — reconnect required.');
-                    store.setCredential(null);
-                }
-                return null;
+                return response.status === 401 ? { refused: true } : {};
             }
             const body = await response.json();
-            this.accessToken = body.accessToken;
-            this.tokenExpiresAt = Date.now() + (body.expiresIn || 3600) * 1000;
-            this.userId = body.userId;
-            return this.accessToken;
+            return { ok: true, token: body.accessToken, expiresIn: body.expiresIn || 3600, userId: body.userId };
         } catch (error) {
             this.onLog(`Token exchange failed: ${error.message}`);
-            return null;
+            return {};
         }
     }
 
+    /** The active account's exchange, cached by `token()`. */
+    async exchange() {
+        const id = store.activeAccountId();
+        const credential = store.getCredential(id);
+        if (!credential) {
+            return null;
+        }
+        const generation = this.generation;
+        const answer = await this.exchangeCredential(credential);
+        if (generation !== this.generation) {
+            return null; // switched meanwhile: token() asks again
+        }
+        if (answer.refused) {
+            // Revoked or rotated in the dashboard. Forget it so the pane asks for a sign-in instead of hammering a
+            // credential that can never work again. The account stays listed, signed out.
+            this.onLog(`LBCBot no longer accepts ${this.accountName(id)} on this computer. Sign in to it again.`);
+            store.signOutAccount(id, credential);
+            return null;
+        }
+        if (!answer.ok) {
+            return null;
+        }
+        this.accessToken = answer.token;
+        this.tokenExpiresAt = Date.now() + answer.expiresIn * 1000;
+        this.userId = answer.userId;
+        if (answer.userId != null) {
+            store.updateAccount(id, { userId: answer.userId }); // an account from before the list learns whose it is
+        }
+        return this.accessToken;
+    }
+
+    accountName(id) {
+        const row = store.accounts().find((r) => r.id === id);
+        return (row && row.username) || 'this account';
+    }
+
+    /**
+     * Work as another listed account from now on: its credential, its token, its commands. The caller restarts device
+     * control and reloads the dashboards. False for an id that names no account.
+     */
+    useAccount(id) {
+        if (!store.setActiveAccount(id)) {
+            return false;
+        }
+        this.resetSession();
+        return true;
+    }
+
+    /** Drop everything that belonged to the account in use (after a switch, or when it is removed). */
+    resetSession() {
+        this.generation += 1;
+        this.accessToken = null;
+        this.tokenExpiresAt = 0;
+        this.userId = null;
+        this.inFlightExchange = null;
+        this.stopDeviceControl();
+    }
+
     /** `signal` (optional) abandons the call — a caller that cannot wait long gives one. */
-    async request(method, path, body, { retrying = false, signal } = {}) {
+    async request(method, path, body, { retrying = false, signal, generation = this.generation } = {}) {
         const token = await this.token();
         if (!token) {
             return { ok: false, status: 0, error: 'not_connected' };
@@ -119,8 +184,14 @@ class LbcBot {
                 signal,
             });
             if (response.status === 401 && !retrying) {
-                this.accessToken = null;
-                return this.request(method, path, body, { retrying: true, signal });
+                if (generation !== this.generation) {
+                    // Started as an account no longer in use: never send it again as another one.
+                    return { ok: false, status: 401, error: 'account_changed' };
+                }
+                if (this.accessToken === token) {
+                    this.accessToken = null;
+                }
+                return this.request(method, path, body, { retrying: true, signal, generation });
             }
             const text = await response.text();
             if (!response.ok) {
@@ -132,54 +203,193 @@ class LbcBot {
         }
     }
 
-    // ------------------------------------------------------------------ device authorization
+    // ------------------------------------------------------------------ device authorization: adding an account
 
-    /** Start the device flow, open the browser at the approval page, and poll until approved. */
-    async connect({ onCode }) {
+    /**
+     * Add an account: start the device flow, open the browser at the approval page, and wait (in the background) for
+     * the approval. Answers as soon as the code is out — `{ ok: true, userCode, verificationUri, expiresIn }` — or `{ ok: false,
+     * error }` when it could not start. One at a time: asking again while one waits answers the same code. `onDone`
+     * gets the outcome once the flow ends: `{ ok: true, id, username }` (now listed and active), or `{ ok: false,
+     * error }`.
+     */
+    startAddAccount({ onDone }) {
+        // `starting` covers the code request itself, so a double click (or the pane and a dashboard menu together)
+        // answers the same code rather than starting two flows.
+        if (this.adding) {
+            // The same code, with what is left of its time (not the full time again).
+            const { expiresAt, ...pending } = this.adding;
+            return Promise.resolve({ ...pending, expiresIn: Math.max(1, Math.round((expiresAt - Date.now()) / 1000)) });
+        }
+        if (!this.addStarting) {
+            this.addStarting = this.beginAdd(onDone).finally(() => {
+                this.addStarting = null;
+            });
+        }
+        return this.addStarting;
+    }
+
+    async beginAdd(onDone) {
         const base = this.baseUrl();
-        const start = await fetch(`${base}/api/device/code`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ clientType: 'DESKTOP', name: 'Desktop app' }),
-        });
-        if (!start.ok) {
-            throw new Error(`Could not start device authorization (HTTP ${start.status})`);
+        let grant;
+        try {
+            const start = await fetch(`${base}/api/device/code`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ clientType: 'DESKTOP', name: 'Desktop app' }),
+            });
+            if (!start.ok) {
+                return { ok: false, error: `Couldn't reach LBCBot (HTTP ${start.status}). Try again.` };
+            }
+            grant = await start.json();
+        } catch (error) {
+            return { ok: false, error: "Couldn't reach LBCBot. Try again." };
         }
-        const grant = await start.json();
-        if (onCode) {
-            onCode(grant);
-        }
+        const expiresIn = grant.expiresIn || 600;
+        const pending = { ok: true, userCode: grant.userCode, verificationUri: grant.verificationUri, expiresIn };
+        this.adding = { ...pending, expiresAt: Date.now() + expiresIn * 1000 };
+        const mine = this.adding;
         shell.openExternal(grant.verificationUriComplete);
+        this.collect(grant)
+            .catch((error) => ({ ok: false, error: `Adding the account failed: ${error.message}` }))
+            .then((outcome) => {
+                if (this.adding === mine) {
+                    this.adding = null;
+                }
+                onDone(outcome);
+            });
+        return pending;
+    }
 
+    /** Poll for the approved credential, then list the account it signs in to. */
+    async collect(grant) {
+        const base = this.baseUrl();
         const intervalMs = Math.max(1, grant.interval || 5) * 1000;
         const deadline = Date.now() + (grant.expiresIn || 600) * 1000;
         while (Date.now() < deadline) {
             await new Promise((resolve) => setTimeout(resolve, intervalMs));
-            const poll = await fetch(`${base}/api/device/token`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ deviceCode: grant.deviceCode }),
-            });
-            const body = await poll.json().catch(() => ({}));
+            let poll;
+            let body = {};
+            try {
+                poll = await fetch(`${base}/api/device/token`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ deviceCode: grant.deviceCode }),
+                });
+                body = await poll.json().catch(() => ({}));
+            } catch (error) {
+                continue; // a blip while the person decides: keep waiting
+            }
             if (poll.ok && body.credential) {
-                store.setCredential(body.credential);
-                this.accessToken = null;
-                await this.token();
-                return true;
+                return this.listAccount(body.credential);
             }
             // authorization_pending is the expected answer while the user decides; anything else ends the flow.
             if (body.error && body.error !== 'authorization_pending') {
-                return false;
+                return { ok: false, error: body.error === 'access_denied' ? 'The sign-in was declined.' : 'The code expired. Try again.' };
             }
         }
-        return false;
+        return { ok: false, error: 'The code expired before it was approved. Try again.' };
     }
 
-    disconnect() {
-        store.setCredential(null);
-        this.accessToken = null;
-        this.userId = null;
-        this.stopDeviceControl();
+    /**
+     * A freshly approved credential: whose it is (its exchange's user id; the name and platform from the
+     * `/users/platforms` answer the pane reads anyway), then into the list as the active account. The same account
+     * signed in again keeps its row, and its old credential is revoked. Past the cap, the new one is revoked again.
+     */
+    async listAccount(credential) {
+        const answer = await this.exchangeCredential(credential);
+        if (!answer.ok) {
+            return { ok: false, error: "LBCBot didn't accept the new sign-in. Try again." };
+        }
+        const profile = { userId: answer.userId };
+        const platforms = await this.call(answer.token, 'GET', '/users/platforms');
+        if (platforms.ok && platforms.data) {
+            profile.username = platforms.data.username;
+            profile.platform = platforms.data.loginPlatform || platforms.data.mainPlatform;
+        }
+        const added = await store.addAccount(profile, credential);
+        if (added.full) {
+            this.revoke(credential, answer.token);
+            return { ok: false, error: `Up to ${MAX_ACCOUNTS} accounts. Remove one to add another.` };
+        }
+        if (added.replaced) {
+            this.revoke(added.replaced);
+        }
+        this.resetSession();
+        // The token just exchanged is the active account's now: no second exchange.
+        this.accessToken = answer.token;
+        this.tokenExpiresAt = Date.now() + answer.expiresIn * 1000;
+        this.userId = answer.userId;
+        return { ok: true, id: added.id, username: profile.username || null };
+    }
+
+    /**
+     * Revoke a device credential at LBCBot (best effort; true when it is revoked). The API revokes by credential id, which
+     * this app never learned, so it is found in the account's own list by its prefix (the first 12 characters, all the
+     * list shows): two calls with that credential's token, and a third to exchange when none is given.
+     */
+    async revoke(credential, token = null) {
+        if (!credential) {
+            return false;
+        }
+        let bearer = token;
+        if (!bearer) {
+            const answer = await this.exchangeCredential(credential);
+            if (answer.refused) {
+                return true; // already refused: revoked, or idle past use
+            }
+            bearer = answer.ok ? answer.token : null;
+        }
+        if (!bearer) {
+            return false;
+        }
+        const list = await this.call(bearer, 'GET', '/users/credentials');
+        if (!list.ok || !Array.isArray(list.data)) {
+            return false;
+        }
+        const prefix = credential.slice(0, 12);
+        const matches = list.data.filter((c) => c.tokenPrefix === prefix && !c.revokedAt);
+        if (matches.length !== 1) {
+            return false; // none, or two that share a prefix: never revoke a guess
+        }
+        const done = await this.call(bearer, 'DELETE', `/users/credentials/${encodeURIComponent(matches[0].credentialId)}`);
+        return done.ok;
+    }
+
+    /** One call with a given token (not the active account's): `{ ok, status, data }`. */
+    async call(token, method, path) {
+        try {
+            const response = await fetch(`${this.baseUrl()}/api${path}`, {
+                method,
+                headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+            });
+            const text = await response.text();
+            let data = null;
+            try {
+                data = text ? JSON.parse(text) : null;
+            } catch {
+                data = null;
+            }
+            return { ok: response.ok, status: response.status, data };
+        } catch (error) {
+            return { ok: false, status: 0, data: null };
+        }
+    }
+
+    /**
+     * Remove an account from this computer: revoke its credential at LBCBot (best effort), then forget it here. Answers
+     * `{ revoked, wasActive }`; when it was the account in use, the next one listed is active now (or none).
+     */
+    async removeAccount(id) {
+        const credential = store.getCredential(id);
+        const token = store.activeAccountId() === id && this.accessToken && Date.now() < this.tokenExpiresAt ? this.accessToken : null;
+        const revoked = credential ? await this.revoke(credential, token) : true;
+        // Read after the revoke: the account may have been switched to while it was out.
+        const wasActive = store.activeAccountId() === id;
+        store.removeAccount(id);
+        if (wasActive) {
+            this.resetSession();
+        }
+        return { revoked, wasActive };
     }
 
     // ------------------------------------------------------------------ device commands in (STOMP)

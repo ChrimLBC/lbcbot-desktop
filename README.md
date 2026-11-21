@@ -133,7 +133,7 @@ waiting or queued, and a connect still in flight, so nothing reaches the timer a
 
 ## Security model
 
-- The credential, the OBS password and the GreenSplit access token are encrypted with Electron's **`safeStorage`** (OS
+- Each account's credential, the OBS password and the GreenSplit access token are encrypted with Electron's **`safeStorage`** (OS
   keychain). Not `keytar` — that is an unmaintained native module needing a rebuild per Electron version, for no extra
   protection. A settings update from the renderer cannot write any of them.
 - **The GreenSplit token only goes to this computer or the local network**: localhost, `127.0.0.0/8`, `::1`, the
@@ -146,8 +146,15 @@ waiting or queued, and a connect still in flight, so nothing reaches the timer a
 - `contextIsolation: true`, `nodeIntegration: false`, and the renderer's entire capability is the verb list in
   `src/preload/index.js`. It holds no credential, makes no API calls and never touches OBS or GreenSplit; a pasted
   Connection URL goes in once and its token never comes back out.
-- The renderer sets a strict CSP and builds all DOM with `textContent`; overlay names are user data.
-- **Forgetting the credential here does not revoke it.** Revoke under Connected apps on the website.
+- The renderer sets a strict CSP and builds all DOM with `textContent`; overlay and account names are user data.
+- **Several accounts** (up to 5, as on the website): one credential each, one in use. The pane and the dashboard
+  windows' account menu name accounts by an id of this app's own, random, never derived from the credential, and get
+  names only; a switch drops the old account's token and command subscription and reloads every dashboard window.
+  The single credential of a version before the list is moved into it as it is, still encrypted: nobody connects again.
+- **Removing an account revokes its credential** (`DELETE /api/users/credentials/{id}`, found by the secret's
+  12-character prefix the API lists) and forgets it here. If LBCBot can't be reached it is still forgotten here, and
+  the log says to revoke it under Connected apps on the website. Signing in again to an account already listed
+  revokes the credential it replaces.
 
 ## Develop
 

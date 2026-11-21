@@ -7,6 +7,7 @@ const sites = require('./sites');
 const { LbcBot } = require('./lbcbot');
 const { ObsBridge } = require('./obs');
 const { GreenSplitBridge, parseConnectionUrl } = require('./greensplit');
+const { MAX_ACCOUNTS } = require('./accounts');
 const { routeDeviceCommand } = require('./devicecontrol');
 const { Updater } = require('./updater');
 const { applyTwitchPasskeyPolicy } = require('./twitchPasskeys');
@@ -721,16 +722,85 @@ async function openDashboardWindow(dashboardId) {
 /**
  * Reload every open dashboard so each signs in again with the current credential (or shows it has none).
  *
- * Called when the credential CHANGES — connect and disconnect — because a dashboard decides whether it has a
- * session once, during page startup. Without this, connecting leaves every already-open window stranded on the
- * signed-out page until it is closed and reopened, which looks like connecting did not work.
+ * Called when the credential CHANGES — an account added, switched to or removed — because a dashboard decides whether it
+ * has a session once, during page startup. Without this, connecting leaves every already-open window stranded on the
+ * signed-out page until it is closed and reopened, which looks like connecting did not work, and a switch would leave
+ * the windows working as the account left behind. `except` is a window that reloads itself (the one whose account menu
+ * asked for the switch: its page reloads once it hears back).
  */
-function reloadDashboards() {
+function reloadDashboards(except = null) {
     dashboardWindows.forEach((win) => {
-        if (!win.isDestroyed()) {
+        if (!win.isDestroyed() && win.webContents !== except) {
             win.webContents.reload();
         }
     });
+}
+
+/**
+ * After the account in use changed (added, switched to, removed): listen for its commands, tell LBCBot about its
+ * GreenSplit, and load every dashboard window again as it. The STOMP topic is per user, so the old subscription went with
+ * the old account (`lbcbot.resetSession`).
+ */
+async function afterAccountChange({ except = null } = {}) {
+    reloadDashboards(except);
+    await pushState();
+    // Not waited for: a dashboard window asks for its token at once, and LBCBot being slow must not hold the switch.
+    if (store.hasCredential()) {
+        startDeviceControl()
+            .then(() => announceGreenSplit())
+            .catch((error) => log(`Listening for commands failed: ${error.message}`))
+            // Its first exchange is what finds a credential LBCBot no longer accepts: the row then shows signed out.
+            .then(() => pushState());
+    }
+}
+
+/** Work as another listed account. `except`: a dashboard window that reloads itself. */
+async function switchAccount(id, { except = null } = {}) {
+    const row = store.accounts().find((r) => r.id === id);
+    if (row && !store.getCredential(id)) {
+        // Signed out: nothing to work as. Switching would leave every window signed out; it is signed in again instead.
+        return { ok: false, signedOut: true, error: `Sign in to ${lbcbot.accountName(id)} again first.` };
+    }
+    if (store.activeAccountId() === id) {
+        return { ok: true };
+    }
+    if (!lbcbot.useAccount(id)) {
+        return { ok: false, error: 'That account is no longer on this computer.' };
+    }
+    log(`Switched to ${lbcbot.accountName(id)}.`);
+    await afterAccountChange({ except });
+    return { ok: true };
+}
+
+/**
+ * Start adding an account (the device flow). Answers once the code is out; the approval is waited for in the
+ * background, and when it comes the new account is the one in use (every dashboard window reloads as it).
+ */
+async function addAccount() {
+    const started = await lbcbot.startAddAccount({
+        onDone: async (outcome) => {
+            if (outcome.ok) {
+                log(`Signed in to ${outcome.username || 'the account'} on this computer.`);
+                await afterAccountChange();
+            } else {
+                log(outcome.error);
+                await pushState();
+            }
+            send('add-account-done', outcome);
+            // The dashboard menus showing the code learn how it ended too (a success reloads them anyway): whether it
+            // worked and why not, never more.
+            dashboardWindows.forEach((win) => {
+                if (!win.isDestroyed() && onOurSite(win.webContents.getURL())) {
+                    win.webContents.send('dashboard-add-account-done', { ok: !!outcome.ok, error: outcome.ok ? null : outcome.error || null });
+                }
+            });
+        },
+    });
+    if (started.ok) {
+        log(`Approve code ${started.userCode} in your browser.`);
+    }
+    await pushState();
+    return started;
 }
 
 /** Twitch's own UI (the Stream Together backstage), in-app on the dashboard's logged-in partition. */
@@ -1024,10 +1094,26 @@ async function pushState() {
         lbcbotConnected: store.hasCredential(),
         obsConnected: obs ? obs.connected : false,
         userId: lbcbot ? lbcbot.userId : null,
+        // The accounts without their credentials, and the code of a sign-in waiting for its approval.
+        accounts: store.accounts(),
+        accountsFull: store.accountsFull(),
+        maxAccounts: MAX_ACCOUNTS,
+        adding: lbcbot && lbcbot.adding ? { userCode: lbcbot.adding.userCode, verificationUri: lbcbot.adding.verificationUri } : null,
         hasObsPassword: Boolean(store.getObsPassword()),
         // Never the token: whether one is saved is in `greensplit.configured`.
         greensplit: greensplit ? greensplit.status : null,
     });
+}
+
+/**
+ * Whether an IPC call comes from one of our dashboard windows while it shows our own site: a window that has navigated
+ * anywhere else (a sign-in page, a link) gets nothing.
+ */
+function fromOurDashboard(event) {
+    const fromDashboard = [...dashboardWindows.values()].some(
+        (win) => !win.isDestroyed() && win.webContents.id === event.sender.id,
+    );
+    return fromDashboard && onOurSite(event.senderFrame && event.senderFrame.url);
 }
 
 function registerIpc() {
@@ -1042,18 +1128,34 @@ function registerIpc() {
      * anywhere else (a sign-in page, a link) gets nothing.
      */
     ipcMain.handle('dashboard-session', async (event, fresh) => {
-        const fromDashboard = [...dashboardWindows.values()].some(
-            (win) => !win.isDestroyed() && win.webContents.id === event.sender.id,
-        );
-        if (!fromDashboard || !onOurSite(event.senderFrame && event.senderFrame.url)) {
+        if (!fromOurDashboard(event)) {
             return null;
         }
         const hadCredential = store.hasCredential();
         const session = await lbcbot.session({ fresh: fresh === true });
         if (!session && hadCredential && !store.hasCredential()) {
-            pushState(); // the API refused the credential just now: the Status pane says to reconnect
+            pushState(); // the API refused the credential just now: the Status pane says to sign in again
         }
         return session;
+    });
+
+    /*
+     * The account menu of a dashboard window's page (2026-11-20): this computer's accounts, a switch, an add. Same guard
+     * as the token. The list carries names and ids only, never a credential; a switch reloads every other dashboard
+     * window here, and the asking page reloads itself once this answers.
+     */
+    ipcMain.handle('dashboard-accounts', async (event) => (fromOurDashboard(event) ? store.accounts() : null));
+    ipcMain.handle('dashboard-switch-account', async (event, id) => {
+        if (!fromOurDashboard(event) || typeof id !== 'string') {
+            return { ok: false };
+        }
+        return switchAccount(id, { except: event.sender });
+    });
+    ipcMain.handle('dashboard-add-account', async (event) => {
+        if (!fromOurDashboard(event)) {
+            return { ok: false };
+        }
+        return addAccount();
     });
 
     ipcMain.handle('get-state', async () => {
@@ -1086,41 +1188,30 @@ function registerIpc() {
         return true;
     });
 
-    ipcMain.handle('connect-lbcbot', async () => {
-        try {
-            const ok = await lbcbot.connect({
-                onCode: (grant) => {
-                    log(`Approve code ${grant.userCode} in your browser.`);
-                    send('device-code', grant);
-                },
-            });
-            if (ok) {
-                log('Connected to LBCBot.');
-                await startDeviceControl();
-                announceGreenSplit();
-                // Any dashboard already open is sitting on the signed-out page, because it was opened before
-                // there was a credential to sign in with. Its page asks again on reload, so this is what turns
-                // "connect" into "my dashboards are signed in" without the user closing and reopening them.
-                reloadDashboards();
-            } else {
-                log('LBCBot connection was not approved before the code expired.');
-            }
-            await pushState();
-            return ok;
-        } catch (error) {
-            log(`Connection failed: ${error.message}`);
-            return false;
-        }
-    });
+    // The Status pane's accounts: add one (the device flow), switch to one, remove one.
+    ipcMain.handle('add-account', async () => addAccount());
 
-    ipcMain.handle('disconnect-lbcbot', async () => {
-        lbcbot.disconnect();
-        log('Forgot the LBCBot credential locally. It is NOT revoked — do that under Connected apps on the website.');
-        // Same reason as on connect, in the other direction: a dashboard left open would keep a session the
-        // machine no longer has a credential for, which is exactly what "disconnect" should not leave behind.
-        reloadDashboards();
-        await pushState();
-        return true;
+    ipcMain.handle('switch-account', async (_event, id) => switchAccount(String(id)));
+
+    ipcMain.handle('remove-account', async (_event, rawId) => {
+        const id = String(rawId);
+        const row = store.accounts().find((r) => r.id === id);
+        if (!row) {
+            return { ok: false };
+        }
+        const name = row.username || 'the account';
+        const { revoked, wasActive } = await lbcbot.removeAccount(id);
+        log(revoked
+            ? `Removed ${name} from this computer and revoked its access.`
+            : `Removed ${name} from this computer. LBCBot couldn't be reached to revoke its access: do that under Connected apps on the website.`);
+        if (wasActive) {
+            // Same reason as on a switch: a dashboard left open would keep working as an account this computer no
+            // longer holds, which is exactly what removing it should not leave behind.
+            await afterAccountChange();
+        } else {
+            await pushState();
+        }
+        return { ok: true, revoked };
     });
 
     ipcMain.handle('connect-obs', async () => {
@@ -1199,8 +1290,19 @@ function registerIpc() {
 
     /** Linked streaming platforms (Twitch / YouTube / Spotify) for this account. */
     ipcMain.handle('get-platforms', async () => {
+        const id = store.activeAccountId();
         const result = await lbcbot.getPlatforms();
-        return result.ok ? result.data : null;
+        if (!result.ok) {
+            return null;
+        }
+        // The account list's name and platform for the account in use, from this answer (no call of its own).
+        if (result.data && id === store.activeAccountId() && store.updateAccount(id, {
+            username: result.data.username,
+            platform: result.data.loginPlatform || result.data.mainPlatform,
+        })) {
+            pushState();
+        }
+        return result.data;
     });
 
     /**

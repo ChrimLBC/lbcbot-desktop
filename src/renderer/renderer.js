@@ -29,11 +29,12 @@ function setStatus(name, on) {
     setPill(el(`${name}-status`), on, 'Online', 'Offline');
     el(`${name}-dot`).className = `dot ${on ? 'dot--on' : 'dot--off'}`;
 
-    // Only offer what can happen now: Connect while offline, Disconnect while connected. ("Forget credential" stays
-    // for LBCBot — a stored credential can exist whether or not it is currently connected.)
-    const connectBtn = el(name === 'lbc' ? 'lbc-connect' : 'obs-connect');
-    if (connectBtn) connectBtn.hidden = !!on;
-    if (name === 'obs' && el('obs-disconnect')) el('obs-disconnect').hidden = !on;
+    // Only offer what can happen now: Connect while offline, Disconnect while connected. (LBCBot's card offers its
+    // accounts instead: renderAccounts.)
+    if (name === 'obs') {
+        el('obs-connect').hidden = !!on;
+        el('obs-disconnect').hidden = !on;
+    }
 
     /*
      * Mirror it onto the card that owns the action, where one exists.
@@ -202,6 +203,156 @@ async function connectGreenSplit() {
 
 let wasConnected = false;
 
+/* ------------------------------------------------------------------ LBCBot accounts */
+
+// Static markup of our own (never user data), so innerHTML is safe for these.
+const PLATFORM_LABELS = { TWITCH: 'Twitch', YOUTUBE: 'YouTube' };
+
+const ICON = {
+    check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>',
+    trash: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>',
+    plus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><line x1="19" y1="8" x2="19" y2="14"/><line x1="22" y1="11" x2="16" y2="11"/></svg>',
+};
+// One account's name before LBCBot has told us (an account carried over from before the list, until its first read).
+const accountName = (row) => row.username || 'Your account';
+
+let accountState = { accounts: [], full: false, adding: null };
+let switchingTo = null;
+let removing = null;
+// The line under the card while no code is out: "Opening your browser…", or why an add failed (in red).
+let addNote = null;
+
+/**
+ * The LBCBot card: each account on this computer (the one in use ticked; a click on another switches to it, on a
+ * signed-out one signs in to it again), a remove per row, and Connect / Add account below. Drawn whole from the pushed
+ * state, which never carries a credential.
+ */
+function renderAccounts() {
+    const { accounts, full, adding } = accountState;
+    const list = el('lbc-accounts');
+    list.replaceChildren();
+    // A platform tag only says something when the accounts are on more than one platform.
+    const platforms = new Set(accounts.map((r) => r.platform).filter(Boolean));
+    accounts.forEach((row) => {
+        const li = document.createElement('li');
+        li.className = `account${row.active ? ' account--active' : ''}${row.signedOut ? ' account--out' : ''}`;
+        const name = accountName(row);
+
+        const main = document.createElement('button');
+        main.type = 'button';
+        main.className = 'account__main';
+        main.title = row.active ? `Using ${name}` : row.signedOut ? `Sign in to ${name} again` : `Switch to ${name}`;
+        if (row.active) main.setAttribute('aria-current', 'true');
+        main.disabled = !!switchingTo || removing === row.id || (row.signedOut && !!adding);
+
+        const avatar = document.createElement('span');
+        avatar.className = 'account__avatar';
+        avatar.setAttribute('aria-hidden', 'true');
+        avatar.textContent = name.charAt(0).toUpperCase();
+
+        const text = document.createElement('span');
+        text.className = 'account__text';
+        const label = document.createElement('span');
+        label.className = 'account__name';
+        label.textContent = name; // textContent: a username is user data
+        text.append(label);
+        const sub = row.signedOut ? 'Signed out. Click to sign in again.' : switchingTo === row.id ? 'Switching…' : null;
+        if (sub) {
+            const subEl = document.createElement('span');
+            subEl.className = 'account__sub';
+            subEl.textContent = sub;
+            text.append(subEl);
+        }
+        main.append(avatar, text);
+
+        if (platforms.size > 1 && PLATFORM_LABELS[row.platform]) {
+            const tag = document.createElement('span');
+            tag.className = `tag tag--${row.platform.toLowerCase()}`;
+            tag.textContent = PLATFORM_LABELS[row.platform];
+            main.append(tag);
+        }
+        const state = document.createElement('span');
+        state.className = 'account__state';
+        if (row.active && !row.signedOut) state.innerHTML = ICON.check;
+        main.append(state);
+
+        main.addEventListener('click', async () => {
+            if (row.active && !row.signedOut) return;
+            if (row.signedOut) {
+                startAdd();
+                return;
+            }
+            switchingTo = row.id;
+            renderAccounts();
+            try {
+                const result = await window.lbcbot.switchAccount(row.id);
+                if (!result.ok && result.error) appendLog(result.error);
+            } catch (error) {
+                appendLog(`Switching failed: ${error.message}`);
+            } finally {
+                switchingTo = null;
+                renderAccounts();
+            }
+        });
+
+        const remove = document.createElement('button');
+        remove.type = 'button';
+        remove.className = 'icon-btn icon-btn--danger account__remove';
+        remove.title = `Remove ${name} from this computer`;
+        remove.setAttribute('aria-label', `Remove ${name} from this computer`);
+        remove.innerHTML = ICON.trash;
+        remove.disabled = removing === row.id;
+        remove.addEventListener('click', async () => {
+            removing = row.id;
+            renderAccounts();
+            try {
+                await window.lbcbot.removeAccount(row.id);
+            } catch (error) {
+                appendLog(`Removing failed: ${error.message}`);
+            } finally {
+                removing = null;
+                renderAccounts();
+            }
+        });
+
+        li.append(main, remove);
+        list.append(li);
+    });
+    list.hidden = !accounts.length;
+
+    const none = !accounts.length;
+    el('lbc-intro').hidden = !none;
+    const add = el('lbc-add');
+    // None yet: the card's one filled button. After that, adding is the quieter outline next to the list.
+    add.className = none ? 'primary' : 'account-add';
+    add.innerHTML = none ? 'Connect' : `${ICON.plus}<span>Add account</span>`;
+    add.title = none ? '' : 'Sign in to another LBCBot account on this computer';
+    add.disabled = !!adding;
+    add.hidden = full && !adding;
+    el('lbc-full').hidden = !(full && !adding);
+
+    const code = el('device-code');
+    if (adding) {
+        // The code in bold: it is what you compare with the browser's page.
+        const strong = document.createElement('strong');
+        strong.className = 'device-code__code';
+        strong.textContent = adding.userCode;
+        code.replaceChildren('Approve code ', strong, ` in your browser (it should have opened at ${adding.verificationUri}).`);
+    } else {
+        code.textContent = (addNote && addNote.text) || '';
+    }
+    code.className = `hint${!adding && addNote && addNote.bad ? ' hint--bad' : ''}`;
+    code.hidden = !code.textContent;
+}
+
+async function startAdd() {
+    addNote = { text: 'Opening your browser…' };
+    renderAccounts();
+    const result = await window.lbcbot.addAccount();
+    addNote = result && result.ok ? null : { text: (result && result.error) || "Couldn't reach LBCBot. Try again.", bad: true };
+    renderAccounts();
+}
+
 function applyState(state) {
     if (!state) return;
     if (state.settings) {
@@ -219,11 +370,17 @@ function applyState(state) {
     }
     applyGreenSplitStatus(state.greensplit);
     // Coming online is when the account's lists first become readable, so read them then too.
+    const wasConnectedBefore = wasConnected;
     if (state.lbcbotConnected && !wasConnected) refreshAccountLists();
     wasConnected = !!state.lbcbotConnected;
     setStatus('lbc', state.lbcbotConnected);
     setStatus('obs', state.obsConnected);
-    if (state.lbcbotConnected) el('device-code').textContent = '';
+    const switched = accountState.accounts.find((r) => r.active)?.id !== (state.accounts || []).find((r) => r.active)?.id;
+    accountState = { accounts: state.accounts || [], full: !!state.accountsFull, adding: state.adding || null };
+    if (state.maxAccounts) el('lbc-full').textContent = `Up to ${state.maxAccounts} accounts. Remove one to add another.`;
+    renderAccounts();
+    // Another account's overlays, dashboards, platforms and templates.
+    if (switched && state.lbcbotConnected && wasConnectedBefore) refreshAccountLists();
 }
 
 function refreshAccountLists() {
@@ -405,7 +562,6 @@ let selectedTemplateId = null;
  */
 let linkedPlatforms = [];
 let newTemplatePlatform = null;
-const PLATFORM_LABELS = { TWITCH: 'Twitch', YOUTUBE: 'YouTube' };
 
 function editorPlatform(template) {
     if (template && template.platform) return template.platform;
@@ -631,18 +787,14 @@ function wireTemplates() {
 }
 
 function wire() {
-    el('lbc-connect').addEventListener('click', async () => {
-        el('device-code').textContent = 'Opening your browser…';
-        await window.lbcbot.connectLbcbot();
-        await refreshOverlays();
-        await refreshDashboards();
-        await refreshPlatforms();
-        await refreshTemplates();
+    el('lbc-add').addEventListener('click', startAdd);
+    window.lbcbot.onAddAccountDone((outcome) => {
+        addNote = outcome.ok ? null : { text: outcome.error, bad: true };
+        renderAccounts();
     });
 
     el('refresh-platforms').addEventListener('click', refreshPlatforms);
     el('open-integrations').addEventListener('click', () => window.lbcbot.openIntegrations());
-    el('lbc-disconnect').addEventListener('click', () => window.lbcbot.disconnectLbcbot());
 
     el('obs-connect').addEventListener('click', async () => {
         await window.lbcbot.setObsPassword(el('obs-password').value);
@@ -720,10 +872,6 @@ function wire() {
     window.lbcbot.onLog(appendLog);
     window.lbcbot.onObsStatus((status) => setStatus('obs', status.connected));
     window.lbcbot.onGreenSplitStatus(applyGreenSplitStatus);
-    window.lbcbot.onDeviceCode((grant) => {
-        el('device-code').textContent =
-            `Approve code ${grant.userCode} — your browser should have opened at ${grant.verificationUri}`;
-    });
 }
 
 (async function init() {

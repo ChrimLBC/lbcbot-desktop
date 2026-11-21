@@ -7,7 +7,7 @@ const path = require('node:path');
 /**
  * Settings and credential storage.
  *
- * The LBCBot credential, the OBS websocket password and the GreenSplit access token are encrypted with Electron's
+ * Each account's LBCBot credential, the OBS websocket password and the GreenSplit access token are encrypted with Electron's
  * `safeStorage`, which is backed by the OS keychain (Keychain on macOS, DPAPI on Windows, libsecret on Linux).
  * Deliberately not `keytar`: that is an unmaintained native module that needs rebuilding per Electron version, and
  * safeStorage covers the same ground with nothing to compile.
@@ -17,6 +17,7 @@ const path = require('node:path');
  */
 
 const sites = require('./sites');
+const accounts = require('./accounts');
 
 const FILE = () => path.join(app.getPath('userData'), 'settings.json');
 
@@ -47,7 +48,18 @@ const DEFAULTS = {
      * restart, which is indistinguishable from the close not working.
      */
     dashboardWindows: {},
+    /**
+     * The accounts this machine is signed in to (accounts.js): `[{ id, userId, username, platform, credential }]`,
+     * each credential encrypted, and the id of the one in use. Never sent to a renderer as they are: `accounts()` answers
+     * the rows without their credentials.
+     */
+    accounts: [],
+    activeAccount: null,
 };
+
+/** Keys only this module writes: a renderer's settings patch never reaches them, and `settings()` never answers them. */
+const PRIVATE = ['credential', 'obsPassword', 'greensplitToken', 'accounts', 'activeAccount'];
+const without = (object, keys) => Object.fromEntries(Object.entries(object || {}).filter(([key]) => !keys.includes(key)));
 
 let cache = null;
 
@@ -56,10 +68,12 @@ function read() {
         return cache;
     }
     try {
-        const { settings, changed } = sites.stripEndpointSettings(JSON.parse(fs.readFileSync(FILE(), 'utf8')));
-        cache = { ...DEFAULTS, ...settings };
-        if (changed) {
-            write(); // drop the retired apiUrl/siteUrl keys
+        const stripped = sites.stripEndpointSettings(JSON.parse(fs.readFileSync(FILE(), 'utf8')));
+        // The single credential from before several accounts becomes the first account, still encrypted.
+        const migrated = accounts.migrate(stripped.settings);
+        cache = { ...DEFAULTS, ...migrated.settings };
+        if (stripped.changed || migrated.changed) {
+            write(); // drop the retired apiUrl/siteUrl keys; move the old credential into the list
         }
     } catch (error) {
         cache = { ...DEFAULTS };
@@ -78,11 +92,13 @@ function write() {
 
 /**
  * The secrets, decrypted once at startup (`load`) and kept in memory: safeStorage's synchronous methods are
- * deprecated in Electron 45 and gone in 46, while a dashboard window asks for the credential over a synchronous IPC. A
- * write updates the memory copy at once and persists the encrypted form when the keychain answers.
+ * deprecated in Electron 45 and gone in 46, while a dashboard window asks for a token over IPC that must not wait on the
+ * keychain. A write updates the memory copy at once and persists the encrypted form when the keychain answers.
+ * `credentials` holds each account's, by account id.
  */
-const SECRETS = ['credential', 'obsPassword', 'greensplitToken'];
-const secrets = { credential: null, obsPassword: null, greensplitToken: null };
+const SECRETS = ['obsPassword', 'greensplitToken'];
+const secrets = { obsPassword: null, greensplitToken: null };
+const credentials = new Map();
 
 /**
  * Encrypt a secret for storage. Falls back to plaintext with a loud warning when the OS has no usable keychain
@@ -134,6 +150,23 @@ async function setSecret(name, value) {
     }
 }
 
+/** Set one account's credential (null: LBCBot refused it, the row stays signed out). Resolves when persisted. */
+async function setAccountCredential(id, value) {
+    if (!read().accounts.some((r) => r.id === id)) {
+        return;
+    }
+    credentials.set(id, value || null);
+    const encrypted = await encrypt(value || null);
+    const row = cache.accounts.find((r) => r.id === id);
+    // As above: only the newest value is written, and never onto a row removed meanwhile.
+    if (row && credentials.get(id) === (value || null)) {
+        row.credential = encrypted;
+        write();
+    }
+}
+
+const signedIn = (row) => Boolean(credentials.get(row.id));
+
 module.exports = {
     /** Decrypt the stored secrets into memory. Await once, after app ready and before anything reads one. */
     async load() {
@@ -145,6 +178,13 @@ module.exports = {
                 await setSecret(name, value);
             }
         }
+        for (const row of stored.accounts) {
+            const { value, shouldReEncrypt } = await decrypt(row.credential);
+            credentials.set(row.id, value);
+            if (shouldReEncrypt) {
+                await setAccountCredential(row.id, value);
+            }
+        }
     },
 
     /** The site and API endpoints: fixed when packaged, env-overridable from source. Every reader goes through this. */
@@ -153,15 +193,14 @@ module.exports = {
     },
 
     settings() {
-        const { credential, obsPassword, greensplitToken, ...rest } = read();
-        return rest;
+        return without(read(), PRIVATE);
     },
 
     update(patch) {
         read();
-        // Secrets change only through their setters, which encrypt: a settings patch carrying one is not obeyed.
-        const { credential, obsPassword, greensplitToken, ...safe } = patch || {};
-        Object.assign(cache, sites.stripEndpointSettings(safe).settings);
+        // Secrets and the accounts change only through their own setters, which encrypt: a settings patch carrying one
+        // is not obeyed.
+        Object.assign(cache, sites.stripEndpointSettings(without(patch, PRIVATE)).settings);
         write();
         return module.exports.settings();
     },
@@ -189,12 +228,97 @@ module.exports = {
         return Object.keys(all).filter((id) => all[id] && all[id].open);
     },
 
-    getCredential() {
-        return secrets.credential;
+    // ---------------------------------------------------------------- accounts (accounts.js)
+
+    /** The accounts, without their credentials: `[{ id, userId, username, platform, active, signedOut }]`. */
+    accounts() {
+        const { accounts: list, activeAccount } = read();
+        return list.map((row) => accounts.publicRow(row, activeAccount, signedIn(row)));
     },
 
-    setCredential(value) {
-        return setSecret('credential', value);
+    activeAccountId() {
+        return read().activeAccount || null;
+    },
+
+    /** Whether there is room for one more account (one already listed can always be signed in again). */
+    accountsFull() {
+        return read().accounts.length >= accounts.MAX_ACCOUNTS;
+    },
+
+    /** An account's credential: the active one's when no id is given. */
+    getCredential(id = read().activeAccount) {
+        return (id && credentials.get(id)) || null;
+    },
+
+    /**
+     * Forget the credential LBCBot just refused, leaving its row signed out. Only that credential: one the account was
+     * signed in with again meanwhile stays.
+     */
+    signOutAccount(id, refused) {
+        if (!id || credentials.get(id) !== refused) {
+            return Promise.resolve();
+        }
+        return setAccountCredential(id, null);
+    },
+
+    /**
+     * List a newly approved account and make it the active one (accounts.add): `{ id, replaced, full }`, where `replaced`
+     * is the credential the same account had here before (to revoke) and `full` means nothing was added.
+     */
+    async addAccount(profile, credential) {
+        // Encrypted first, so the row is written once, whole: a quit midway cannot leave it listed with no credential.
+        const blob = await encrypt(credential);
+        read();
+        const result = accounts.add(cache.accounts, profile, blob);
+        if (result.full) {
+            return { id: null, replaced: null, full: true };
+        }
+        const replaced = result.replaced !== null ? credentials.get(result.id) || null : null;
+        cache.accounts = result.list;
+        cache.activeAccount = result.id;
+        credentials.set(result.id, credential);
+        write();
+        return { id: result.id, replaced, full: false };
+    },
+
+    /** Bring an account's name, platform or user id up to date. True when something changed. */
+    updateAccount(id, profile) {
+        read();
+        const next = accounts.update(cache.accounts, id, profile);
+        if (next === cache.accounts) {
+            return false;
+        }
+        cache.accounts = next;
+        write();
+        return true;
+    },
+
+    /** Make a listed account the active one. False for an id that names no row. */
+    setActiveAccount(id) {
+        read();
+        if (!cache.accounts.some((r) => r.id === id)) {
+            return false;
+        }
+        if (cache.activeAccount !== id) {
+            cache.activeAccount = id;
+            write();
+        }
+        return true;
+    },
+
+    /**
+     * Forget an account here, credential and all. Answers `{ credential, active }`: the credential it held (to revoke)
+     * and the account active now (another, when it was the one in use, or null).
+     */
+    removeAccount(id) {
+        read();
+        const credential = credentials.get(id) || null;
+        const { list, active } = accounts.remove(cache.accounts, id, cache.activeAccount, signedIn);
+        cache.accounts = list;
+        cache.activeAccount = active;
+        credentials.delete(id);
+        write();
+        return { credential, active };
     },
 
     getObsPassword() {
@@ -213,7 +337,8 @@ module.exports = {
         return setSecret('greensplitToken', value);
     },
 
+    /** Whether the active account has a usable credential. */
     hasCredential() {
-        return Boolean(secrets.credential);
+        return Boolean(module.exports.getCredential());
     },
 };

@@ -14,8 +14,10 @@ contextBridge.exposeInMainWorld('lbcbot', {
     updateSettings: (patch) => ipcRenderer.invoke('update-settings', patch),
     setObsPassword: (password) => ipcRenderer.invoke('set-obs-password', password),
 
-    connectLbcbot: () => ipcRenderer.invoke('connect-lbcbot'),
-    disconnectLbcbot: () => ipcRenderer.invoke('disconnect-lbcbot'),
+    // LBCBot accounts on this computer. The pane names them by an id of this app's own; credentials stay in main.
+    addAccount: () => ipcRenderer.invoke('add-account'),
+    switchAccount: (id) => ipcRenderer.invoke('switch-account', id),
+    removeAccount: (id) => ipcRenderer.invoke('remove-account', id),
 
     connectObs: () => ipcRenderer.invoke('connect-obs'),
     disconnectObs: () => ipcRenderer.invoke('disconnect-obs'),
@@ -76,9 +78,10 @@ contextBridge.exposeInMainWorld('lbcbot', {
         ipcRenderer.on('update-status', listener);
         return () => ipcRenderer.removeListener('update-status', listener);
     },
-    onDeviceCode: (handler) => {
-        const listener = (_event, grant) => handler(grant);
-        ipcRenderer.on('device-code', listener);
-        return () => ipcRenderer.removeListener('device-code', listener);
+    // How an "Add account" ended: `{ ok, username }` or `{ ok: false, error }`, the words to show.
+    onAddAccountDone: (handler) => {
+        const listener = (_event, outcome) => handler(outcome);
+        ipcRenderer.on('add-account-done', listener);
+        return () => ipcRenderer.removeListener('add-account-done', listener);
     },
 });

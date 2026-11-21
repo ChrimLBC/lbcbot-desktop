@@ -85,14 +85,16 @@
                         <span id="lbc-conn-text">Checking…</span>
                     </span>
                 </div>
-                <p class="hint">
-                    Links this computer to your LBCBot account with a one-time code. To remove it for good, use
-                    Connected apps on the website.
-                </p>
+                <!--
+                  The accounts this computer is signed in to (2026-11-20): one in use, a click on another switches to
+                  it and every dashboard window loads again as it. Rows are drawn by renderer.js (renderAccounts).
+                -->
+                <ul id="lbc-accounts" class="list accounts" aria-label="Accounts on this computer"></ul>
+                <p id="lbc-intro" class="hint">Links this computer to your LBCBot account with a one-time code.</p>
                 <div class="row row--actions">
-                    <button id="lbc-connect" class="primary">Connect</button>
-                    <button id="lbc-disconnect">Forget credential</button>
+                    <button id="lbc-add" class="primary">Connect</button>
                 </div>
+                <p id="lbc-full" class="hint" hidden>Up to 5 accounts. Remove one to add another.</p>
                 <p id="device-code" class="hint"></p>
             </section>
 

@@ -22,7 +22,8 @@
  *
  * These windows render a REMOTE page and must stay untrusted: the app's own renderer is the one that holds the IPC
  * bridge, and nothing here may widen that. So this exposes one function that answers with a token for our own site's
- * page (the main process checks the window and its address), and nothing else. `contextIsolation` stays on.
+ * page (the main process checks the window and its address), and the account menu's three calls below (2026-11-20),
+ * under the same check. `contextIsolation` stays on.
  */
 
 const { contextBridge, ipcRenderer } = require('electron');
@@ -44,4 +45,21 @@ contextBridge.exposeInMainWorld('lbcbotDesktop', {
      * the token the page holds.
      */
     sessionToken: (options) => ipcRenderer.invoke('dashboard-session', !!(options && options.fresh)),
+
+    /*
+     * The accounts this computer is signed in to, for the page's account menu: `[{ id, userId, username, platform,
+     * active, signedOut }]`, never a credential. `switchAccount(id)` makes one the account in use and reloads every
+     * other dashboard window (the asking page reloads itself once it answers `{ ok }`). `addAccount()` starts the same
+     * sign-in as the app's Status pane: `{ ok, userCode, verificationUri }` as soon as the code is out, and when it is
+     * approved the new account is the one in use and every dashboard window reloads as it.
+     */
+    accounts: () => ipcRenderer.invoke('dashboard-accounts'),
+    switchAccount: (id) => ipcRenderer.invoke('dashboard-switch-account', String(id)),
+    addAccount: () => ipcRenderer.invoke('dashboard-add-account'),
+    /* How an add ended, `{ ok, error }`, so the menu stops showing its code. Answers a function that stops listening. */
+    onAddAccountDone: (callback) => {
+        const listener = (_event, outcome) => callback(outcome);
+        ipcRenderer.on('dashboard-add-account-done', listener);
+        return () => ipcRenderer.removeListener('dashboard-add-account-done', listener);
+    },
 });
