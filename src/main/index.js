@@ -117,10 +117,17 @@ const DASHBOARD_PARTITION = 'persist:lbcbot-dashboard';
  *
  * <h3>Why the trailing token stays</h3>
  *
- * `LBCBotDesktop/1.0` is how the WEB APP detects it is running inside the desktop app, which is what lets a
+ * `LBCBotDesktop/<x.y>` is how the WEB APP detects it is running inside the desktop app, which is what lets a
  * widget render a live `<webview>` embed here and a plain "open in a tab" button in a browser. Sniffing for
  * "Electron" would have worked until the moment that token was removed, so the two needs are solved together.
  */
+/*
+ * Bumped when the web app needs to tell a newer build apart (its util/desktopLinks reads it). 1.1 (2026-11-22): Twitch
+ * links honour #open-in-browser. An older build would load such a link into its one Twitch window instead, replacing
+ * whatever the streamer had open there, so the web app offers it only from 1.1.
+ */
+const DESKTOP_TOKEN_VERSION = '1.1';
+
 function buildUserAgent() {
     const base = app.userAgentFallback || '';
     const chromeLike = base
@@ -131,7 +138,7 @@ function buildUserAgent() {
         .replace(/\s[^\s/]+\/[\d.]+(?=\sChrome\/)/, '')
         .replace(/\s{2,}/g, ' ')
         .trim();
-    return `${chromeLike} LBCBotDesktop/1.0`;
+    return `${chromeLike} LBCBotDesktop/${DESKTOP_TOKEN_VERSION}`;
 }
 
 /** Resolved once at startup, after `app` is ready enough to know its own default. */

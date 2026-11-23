@@ -61,7 +61,7 @@ function isSiteHost(host, siteUrl) {
 /**
  * A link to our own site stays in the app unless it carries this marker, which asks for the system browser. It exists
  * for "Confirm it's you": the API refuses an app's credential for those actions outright (Sessions.Recent), so the only
- * way to finish one is a real browser session. Must match OPEN_IN_BROWSER in the web app's ReauthPrompt.
+ * way to finish one is a real browser session. Must match OPEN_IN_BROWSER in the web app's util/desktopLinks.
  */
 const BROWSER_MARKER = '#open-in-browser';
 
