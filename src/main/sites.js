@@ -85,4 +85,15 @@ function browserTarget(target) {
     }
 }
 
-module.exports = { DEFAULT_SITE_URL, DEFAULT_API_URL, SITE_HOSTS, resolveEndpoints, stripEndpointSettings, isSiteHost, browserTarget };
+/**
+ * Twitch's own site, where the marker is also honoured (2026-11-22): the Twitch Actions card's "Open their channel" in
+ * a raid sends the streamer to the channel in their own browser, where they are signed in and watching as themselves,
+ * instead of this app's Twitch window. A Twitch page could send itself there too, which costs nothing: it is still
+ * only an http(s) twitch.tv address handed to the browser.
+ */
+const isTwitchHost = (host) => /^([a-z0-9-]+\.)*twitch\.tv$/i.test(String(host || ''));
+
+module.exports = {
+    DEFAULT_SITE_URL, DEFAULT_API_URL, SITE_HOSTS, resolveEndpoints, stripEndpointSettings, isSiteHost, browserTarget,
+    isTwitchHost,
+};

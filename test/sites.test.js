@@ -24,6 +24,16 @@ test('a marked link can only ever be http(s): openExternal launches whatever han
     }
 });
 
+test('Twitch links honour the marker too; other sites are never matched as Twitch', () => {
+    assert.equal(s.browserTarget('https://www.twitch.tv/somestreamer#open-in-browser'), 'https://www.twitch.tv/somestreamer');
+    for (const host of ['twitch.tv', 'www.twitch.tv', 'dashboard.twitch.tv', 'WWW.Twitch.TV']) {
+        assert.equal(s.isTwitchHost(host), true, host);
+    }
+    for (const host of ['twitch.tv.evil.com', 'nottwitch.tv.example', 'eviltwitch.tvx', 'lbcbot.com', '', undefined]) {
+        assert.equal(s.isTwitchHost(host), false, String(host));
+    }
+});
+
 test('packaged builds use the fixed endpoints and ignore the environment', () => {
     const env = { LBCBOT_SITE_URL: 'http://localhost:3000', LBCBOT_API_URL: 'http://localhost:8081' };
     assert.deepEqual(s.resolveEndpoints(true, env), { siteUrl: 'https://lbcbot.com', apiUrl: 'https://api.lbcbot.com' });

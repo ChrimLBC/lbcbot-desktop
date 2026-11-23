@@ -444,8 +444,9 @@ const windowOpenPolicy = ({ url: target }) => {
         shell.openExternal(target);
         return { action: 'deny' };
     }
-    // "Confirm it's you" can't be answered in here, so its box sends the person to the same page in their browser.
-    const inBrowser = ours ? sites.browserTarget(target) : null;
+    // "Confirm it's you" can't be answered in here, so its box sends the person to the same page in their browser; a
+    // raid's "open their channel" does the same for a Twitch link.
+    const inBrowser = ours || sites.isTwitchHost(host) ? sites.browserTarget(target) : null;
     if (inBrowser) {
         shell.openExternal(inBrowser);
         return { action: 'deny' };
