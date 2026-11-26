@@ -76,7 +76,8 @@ class ObsBridge {
         // Loaded here, not at the top, so the tests can pass a stand-in without the package installed.
         client = new (require('obs-websocket-js').default)(),
         settings = () => require('./store').settings(),
-        password = () => require('./store').getObsPassword(),
+        // This connection's saved password (obsconnections.js passes each bridge its own).
+        password = () => null,
         setTimer = setTimeout, clearTimer = clearTimeout, now = Date.now,
     }) {
         this.obs = client;

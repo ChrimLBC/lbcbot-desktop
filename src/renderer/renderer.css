@@ -519,35 +519,158 @@ button:focus-visible { outline: 2px solid rgba(var(--accent-rgb), 0.6); outline-
 .device-code__code { color: var(--ink); font-weight: 700; letter-spacing: 0.04em; }
 
 /* ---------------------------------------------------------------------------------------------------------------------
-   OBS on another PC (2026-11-26): where OBS is, the network scan's results, and the stream's Start / Stop row.
+   OBS connections (2026-11-26, HANDOFF-obs-multi): one row per OBS, its stream line under it, a ⋯ menu, and the add
+   panel (found PCs, a password field in place, a typed address as the fallback).
    --------------------------------------------------------------------------------------------------------------------- */
-.obs-where { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
-.obs-where small { color: var(--muted); font-size: 12px; margin-left: 6px; }
-.obs-where + .obs-rename { flex: 1 1 auto; min-width: 0; }
-.obs-rename-btn, .obs-find { flex: 0 0 auto; }
-.obs-rename-btn { margin-left: 0; }
-.obs-found { margin: 4px 0 8px; padding: 0 10px; border-radius: 8px; background: rgba(255, 255, 255, 0.03); }
-.obs-found li { cursor: pointer; padding: 8px 4px; }
-.obs-found li:hover { color: #fff; }
-.obs-found li.is-current { color: var(--accent); cursor: default; }
-.obs-found li.is-empty { cursor: default; color: var(--muted); font-size: 12.5px; }
-.obs-found svg { width: 13px; height: 13px; color: var(--muted); flex: 0 0 auto; }
-.obs-stream {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    margin-top: 14px;
-    padding-top: 12px;
-    border-top: 1px solid var(--line);
-    min-height: 42px; /* the same height whether it shows Start, Stop, or Undo: nothing below moves */
+.obs-card { position: relative; }
+.obs-add { display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px 5px 9px; }
+.obs-add svg { width: 15px; height: 15px; }
+.obs-add[hidden] { display: none; }
+.obs-empty { margin: 0 0 2px; }
+
+.obs-list { margin: 0; padding: 0; list-style: none; }
+.obs-row { padding: 10px 0; border-top: 1px solid var(--line); }
+.obs-row:first-child { padding-top: 2px; border-top: none; }
+.obs-row:last-child { padding-bottom: 2px; }
+.obs-row__head { display: flex; align-items: center; gap: 9px; min-height: 29px; }
+.obs-row__name {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 13.5px;
+    color: #fff;
+    cursor: default;
 }
-.obs-stream .pill { font-variant-numeric: tabular-nums; }
+.obs-row__name small { margin-left: 7px; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.obs-row__state { flex: 0 0 auto; color: var(--muted); font-size: 12px; white-space: nowrap; }
+.obs-row__state--bad { color: var(--bad); }
+.obs-badge {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 5px;
+    padding: 2px 9px 2px 7px;
+    border-radius: 999px;
+    background: rgba(var(--accent-rgb), 0.12);
+    color: var(--accent);
+    font-size: 11px;
+    font-weight: 600;
+    white-space: nowrap;
+}
+.obs-badge svg { width: 13px; height: 13px; }
+.obs-more { flex: 0 0 auto; margin-left: 0; border-color: transparent; background: transparent; }
+.obs-more:hover:not(:disabled), .obs-more[aria-expanded='true'] { background: rgba(255, 255, 255, 0.07); color: var(--ink); }
+.obs-rename {
+    flex: 1 1 auto;
+    min-width: 0;
+    padding: 4px 8px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: var(--raised);
+    color: var(--ink);
+    font-size: 13.5px;
+}
+.obs-rename:focus-visible { outline: 2px solid rgba(var(--accent-rgb), 0.55); outline-offset: 0; }
+.dot--wait { background: #fbbf24; }
+
+/* The row's second line, indented to the name so the dot column stays clear. */
+.obs-row__body { display: flex; align-items: center; gap: 10px; margin: 6px 0 0 17px; min-height: 29px; }
+.obs-row__why { margin: 4px 0 0 17px; }
+.obs-stream .pill { flex: 0 0 auto; font-variant-numeric: tabular-nums; }
 .pill--live { background: rgba(248, 113, 113, 0.16); color: var(--bad); }
 .pill--warn { background: rgba(251, 191, 36, 0.16); color: #fbbf24; }
 .obs-stream__note { flex: 1 1 auto; min-width: 0; color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.obs-stream .icon-btn { margin-left: 0; }
+.obs-stream .icon-btn { flex: 0 0 auto; margin-left: auto; }
 .obs-stream__go { color: var(--on); }
 .obs-stream__go:hover:not(:disabled) { border-color: rgba(52, 211, 153, 0.65); box-shadow: 0 0 0 2px rgba(52, 211, 153, 0.2); }
+.obs-undo { flex: 0 0 auto; margin-left: auto; height: 29px; padding: 4px 14px; }
+
+.obs-pw { flex-wrap: wrap; }
+.obs-pw input, .obs-found__pw input, .obs-typed input {
+    flex: 1 1 120px;
+    min-width: 0;
+    padding: 6px 8px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: var(--raised);
+    color: var(--ink);
+    font-size: 13px;
+}
+.obs-pw input:focus-visible, .obs-found__pw input:focus-visible, .obs-typed input:focus-visible {
+    outline: 2px solid rgba(var(--accent-rgb), 0.55);
+    outline-offset: 0;
+}
+.obs-pw button, .obs-found__pw button, .obs-typed button { flex: 0 0 auto; }
+.obs-pw__msg, .obs-found__msg, .obs-typed__msg { flex: 1 0 100%; margin: 0; min-height: 18px; }
+
+.obs-row--gone { display: flex; align-items: center; gap: 10px; min-height: 64px; color: var(--muted); font-size: 13px; }
+.obs-row__gone { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.obs-row__left { flex: 0 0 auto; font-size: 12px; font-variant-numeric: tabular-nums; }
+.obs-row--gone .obs-undo { margin-left: 0; }
+
+.obs-menu { --plan-float: #1f2230; min-width: 236px; }
+.obs-menu__danger:hover:not(:disabled) { color: var(--bad); background: rgba(248, 113, 113, 0.1) !important; }
+
+/* The add panel, in the card under the list. */
+.obs-addpanel {
+    margin-top: 12px;
+    padding: 10px 12px 12px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.025);
+}
+.obs-list:empty ~ .obs-addpanel { margin-top: 4px; }
+.obs-addpanel__head { display: flex; align-items: center; gap: 4px; margin-bottom: 6px; }
+.obs-addpanel__title { flex: 1 1 auto; color: var(--muted); font-size: 12px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; }
+.obs-addpanel__btn { margin-left: 0; width: 27px; height: 27px; border-color: transparent; background: transparent; }
+.obs-addpanel__btn:hover:not(:disabled) { background: rgba(255, 255, 255, 0.07); color: var(--ink); }
+.obs-addpanel__btn.is-spinning svg { animation: plan-spin 0.9s linear infinite; }
+.obs-addpanel__tip { margin: 10px 0 0; }
+
+.obs-found { margin: 0; padding: 0; list-style: none; }
+.obs-found__row { border-top: 1px solid var(--line); }
+.obs-found__row:first-child { border-top: none; }
+.obs-found__empty { display: flex; align-items: center; gap: 9px; padding: 9px 4px; color: var(--muted); font-size: 12.5px; }
+.obs-found__main {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    padding: 9px 6px;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    text-align: left;
+    box-shadow: none !important;
+}
+.obs-found__main:hover:not(:disabled) { background: rgba(255, 255, 255, 0.05); }
+.obs-found__main:disabled { opacity: 1; cursor: default; }
+.obs-found__name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13.5px; }
+.obs-found__name small { margin-left: 7px; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.obs-found__tag { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 5px; color: var(--muted); font-size: 12px; white-space: nowrap; }
+.obs-found__tag svg { width: 13px; height: 13px; }
+.obs-found__tag .plan__spin { width: 11px; height: 11px; }
+.obs-found__go { display: inline-flex; flex: 0 0 auto; color: var(--muted); }
+.obs-found__go svg { width: 15px; height: 15px; }
+.obs-found__row.is-open .obs-found__go svg { transform: rotate(90deg); }
+.obs-found__row.is-added .obs-found__name { color: var(--muted); }
+.obs-found__row.is-added .obs-found__tag { color: var(--on); }
+.obs-found__pw { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; padding: 2px 6px 10px; }
+
+.obs-link {
+    margin-top: 8px;
+    padding: 2px 6px;
+    border: 0;
+    background: transparent;
+    color: var(--accent);
+    font-size: 12.5px;
+    box-shadow: none !important;
+}
+.obs-link:hover:not(:disabled) { background: transparent; text-decoration: underline; }
+.obs-link[hidden], .obs-typed[hidden] { display: none; }
+.obs-typed { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; margin-top: 10px; padding: 0 6px; }
 
 /* ---------------------------------------------------------------------------------------------------------------------
    2026-11-26 — the account manager in the sidebar: the account in use is the last of the rail's connections (its

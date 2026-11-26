@@ -321,53 +321,45 @@
             </section>
 
             <!--
-              OBS, on this PC or another one on the network (2026-11-26: with NDI the OBS that goes live is often on a
-              second PC). The hint line doubles as the error line, so a problem shows where you are looking and
-              nothing below moves. The stream row shows only while connected: Start and Stop can't work otherwise.
+              OBS, one row per connection (2026-11-26, HANDOFF-obs-multi): with NDI there is often an OBS here (the
+              source) and one on the PC that goes live. Each row is its state, its name (rename in place), its stream
+              (Start, Stop with Undo) and a ⋯ menu. Adding is one panel: it scans at once, a click on a found PC adds
+              it (a password field opens in place when that OBS needs one), and a typed address is the fallback.
+              Drawn by renderer.js (renderObs).
             -->
-            <section class="card">
+            <section class="card obs-card" id="obs-card">
                 <div class="card__head">
                     <h3>OBS</h3>
-                    <span class="conn">
-                        <span class="dot dot--off" id="obs-conn-dot"></span>
-                        <span id="obs-conn-text">Not connected</span>
-                    </span>
+                    <button type="button" id="obs-add" class="obs-add">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                        Add OBS
+                    </button>
                 </div>
-                <p class="hint" id="obs-hint">In OBS, open Tools → WebSocket Server Settings, turn it on, and copy the password here.</p>
-                <div class="row">
-                    <label>OBS on</label>
-                    <span id="obs-where" class="obs-where">This PC</span>
-                    <!-- Rename in place: the input takes the name's spot, Enter or leaving it saves, Esc cancels. -->
-                    <input id="obs-rename-input" class="obs-rename" type="text" maxlength="40" spellcheck="false"
-                           aria-label="Name for this OBS PC" hidden />
-                    <button type="button" id="obs-rename" class="icon-btn obs-rename-btn" title="Rename"
-                            aria-label="Rename this OBS PC"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg></button>
-                    <button type="button" id="obs-find" class="icon-btn obs-find" title="Find OBS on my network"
-                            aria-label="Find OBS on my network"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></button>
+                <ul id="obs-list" class="obs-list" aria-label="OBS connections"></ul>
+                <p class="hint obs-empty" id="obs-empty" hidden>Control OBS on this PC or another one on your network.</p>
+                <!-- The add panel: found PCs, then "Enter an address" for one the scan can't see. -->
+                <div id="obs-addpanel" class="obs-addpanel" hidden>
+                    <div class="obs-addpanel__head">
+                        <span class="obs-addpanel__title" id="obs-addpanel-title">OBS on your network</span>
+                        <button type="button" id="obs-rescan" class="icon-btn obs-addpanel__btn" title="Search again"
+                                aria-label="Search again"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15A9 9 0 1 1 18.36 5.64L23 10"/></svg></button>
+                        <button type="button" id="obs-addclose" class="icon-btn obs-addpanel__btn" title="Close"
+                                aria-label="Close"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
+                    </div>
+                    <ul id="obs-found" class="obs-found" aria-label="OBS on this network"></ul>
+                    <button type="button" id="obs-typed-open" class="obs-link">Enter an address</button>
+                    <form id="obs-typed" class="obs-typed" hidden autocomplete="off">
+                        <input id="obs-typed-address" type="text" spellcheck="false" placeholder="10.0.0.88 or 10.0.0.88:4455"
+                               aria-label="OBS address" />
+                        <input id="obs-typed-password" type="password" placeholder="Password (if set)"
+                               aria-label="OBS WebSocket password" />
+                        <button type="submit" id="obs-typed-go" class="primary">Connect</button>
+                        <p class="hint obs-typed__msg" id="obs-typed-msg"></p>
+                    </form>
+                    <p class="hint obs-addpanel__tip">Not listed? In OBS on that PC: Tools → WebSocket Server Settings → Enable.</p>
                 </div>
-                <div class="row">
-                    <label for="obs-url">OBS WebSocket URL</label>
-                    <input id="obs-url" type="text" spellcheck="false" placeholder="ws://127.0.0.1:4455" />
-                </div>
-                <!-- The scan's results: a click connects to that PC. Drawn by renderer.js (renderObsFound). -->
-                <ul id="obs-found" class="list obs-found" aria-label="OBS on this network" hidden></ul>
-                <div class="row">
-                    <label for="obs-password">Password</label>
-                    <input id="obs-password" type="password" placeholder="from OBS → Tools → WebSocket Server Settings" />
-                </div>
-                <div class="row row--actions">
-                    <button id="obs-connect" class="primary">Connect</button>
-                    <button id="obs-disconnect">Disconnect</button>
-                </div>
-                <div id="obs-stream" class="obs-stream" hidden>
-                    <span id="obs-live" class="pill pill--off">Not live</span>
-                    <span id="obs-stream-note" class="obs-stream__note"></span>
-                    <button type="button" id="obs-start" class="icon-btn obs-stream__go" title="Start streaming"
-                            aria-label="Start streaming"><svg viewBox="0 0 24 24" fill="currentColor" stroke="none" aria-hidden="true"><polygon points="7 4 20 12 7 20 7 4"/></svg></button>
-                    <button type="button" id="obs-stop" class="icon-btn icon-btn--danger" title="Stop streaming"
-                            aria-label="Stop streaming" hidden><svg viewBox="0 0 24 24" fill="currentColor" stroke="none" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1.5"/></svg></button>
-                    <button type="button" id="obs-undo" hidden>Undo</button>
-                </div>
+                <!-- The ⋯ menu of one row, moved under the row's button when opened. -->
+                <div class="plan__menu obs-menu" id="obs-menu" role="menu" hidden></div>
             </section>
 
             <!--

@@ -6,6 +6,7 @@ const store = require('./store');
 const sites = require('./sites');
 const { LbcBot } = require('./lbcbot');
 const { ObsBridge } = require('./obs');
+const { ObsConnections } = require('./obsconnections');
 const obsDiscovery = require('./obsdiscovery');
 const { GreenSplitBridge, parseConnectionUrl } = require('./greensplit');
 const { MAX_ACCOUNTS } = require('./accounts');
@@ -1016,28 +1017,31 @@ function buildServices() {
         onStatus: (status) => send('update-status', status),
     });
 
-    obs = new ObsBridge({
+    // One ObsBridge per OBS connection (obsconnections.js): the source PC's and the streaming PC's, say.
+    obs = new ObsConnections({
+        store: {
+            list: () => store.obsConnections(),
+            save: (list) => store.saveObsConnections(list),
+            password: (id) => store.getObsPasswordFor(id),
+            setPassword: (id, value) => store.setObsPasswordFor(id, value),
+            deletePassword: (id) => store.setObsPasswordFor(id, null),
+            settings: () => store.settings(),
+        },
+        makeBridge: (conn, hooks) => new ObsBridge(hooks),
         onLog: log,
         onStatus: (status) => send('obs-status', status),
         onObsEvent: async (event) => {
-            // OBS -> LBCBot. Fire and forget: a failed post must not stall the OBS event stream, and the user will
-            // see it in the log.
+            // OBS -> LBCBot, from every connected OBS, tagged with which one (obsId, obsName). Fire and forget: a
+            // failed post must not stall the OBS event stream, and the user will see it in the log.
             const result = await lbcbot.postObsEvent(event);
             if (!result.ok) {
                 log(`Could not forward ${event.eventType}: ${result.error || result.status}`);
             }
         },
-        // Live stats for a dashboard that is watching. Not logged on failure: one every 2 s would bury the log, and
-        // the dashboard already says when none arrive.
+        // Live stats for a dashboard that is watching, each tagged obsId + name + role. Not logged on failure: one
+        // every 2 s would bury the log, and the dashboard already says when none arrive.
         onStats: async (payload, options) => {
             if (store.hasCredential()) await lbcbot.postObsStats(payload, options);
-        },
-        // What the dashboard calls this OBS, as the app's list does: the user's name for the PC, else "This PC", else
-        // the name it reports.
-        name: () => {
-            const s = store.settings();
-            const host = (() => { try { return new URL(s.obsUrl).hostname; } catch (e) { return ''; } })();
-            return (s.obsNames && s.obsNames[host]) || (s.obsLocal ? 'This PC' : s.obsName) || '';
         },
     });
 
@@ -1114,7 +1118,7 @@ async function pushState() {
         settings: store.settings(),
         lbcbotConnected: store.hasCredential(),
         obsConnected: obs ? obs.connected : false,
-        // Where OBS is, the connection's state and the stream's (obs.js `status`). Never the password.
+        // Each OBS connection, its state and its stream's (obsconnections.js `status`). Never a password.
         obs: obs ? obs.status : null,
         userId: lbcbot ? lbcbot.userId : null,
         // The accounts without their credentials, and the code of a sign-in waiting for its approval.
@@ -1122,7 +1126,6 @@ async function pushState() {
         accountsFull: store.accountsFull(),
         maxAccounts: MAX_ACCOUNTS,
         adding: lbcbot && lbcbot.adding ? { userCode: lbcbot.adding.userCode, verificationUri: lbcbot.adding.verificationUri } : null,
-        hasObsPassword: Boolean(store.getObsPassword()),
         // Never the token: whether one is saved is in `greensplit.configured`.
         greensplit: greensplit ? greensplit.status : null,
     });
@@ -1199,25 +1202,11 @@ function registerIpc() {
         // GreenSplit's address and on/off change only through connect/disconnect/forget below: the address is where
         // the keychain token gets sent, so the renderer never gets to write it unchecked.
         const { greensplitUrl, greensplitEnabled, ...patch } = rawPatch || {};
-        const before = store.settings().obsUrl;
+        // The OBS connections change only through the OBS calls below (store.js LOCKED), never a patch.
         const updated = store.update(patch);
         greensplit.settingsChanged(); // a new LiveSplit adapter port takes effect at once
-        if (store.settings().obsUrl !== before) {
-            if (patch.obsName === undefined) {
-                // A typed address: the name the scan gave the old one no longer applies.
-                const url = store.settings().obsUrl;
-                store.update({ obsName: '', obsLocal: /^wss?:\/\/(127\.0\.0\.1|localhost)(:|\/|$)/i.test(url) });
-            }
-            obs.reconnect(); // a typed address takes effect at once; not awaited, it may retry for a while
-        }
         await pushState();
         return updated;
-    });
-
-    ipcMain.handle('set-obs-password', async (_event, password) => {
-        store.setObsPassword(password || null);
-        await pushState();
-        return true;
     });
 
     // The account menu's accounts: add one (the device flow), switch to one, remove one.
@@ -1246,32 +1235,29 @@ function registerIpc() {
         return { ok: true, revoked };
     });
 
-    ipcMain.handle('connect-obs', async () => {
-        const ok = await obs.connect();
+    /*
+     * The OBS connections (obsconnections.js). A PC is added from the last scan's rows by address, or from an address
+     * typed by hand; a password typed for it goes to that one address only. A saved connection's address never changes
+     * (a new address is a new connection), so a renderer can't point a saved password anywhere else.
+     */
+    ipcMain.handle('obs-connect', async (_event, { id, password } = {}) => {
+        const ok = await obs.connect(String(id), password ? String(password) : '');
         await pushState();
-        return ok;
+        const row = obs.status.connections.find((c) => c.id === String(id));
+        return { ok, state: row ? row.state : 'off', error: row ? row.error : null };
     });
 
-    ipcMain.handle('disconnect-obs', async () => {
-        await obs.disconnect();
+    ipcMain.handle('obs-disconnect', async (_event, id) => {
+        await obs.disconnect(String(id));
         await pushState();
         return true;
     });
 
-    /*
-     * "Find OBS on my network" (obsdiscovery.js). The renderer gets the list to show and may then pick one by its
-     * address: only an address from the last scan is accepted, so a renderer can't point the OBS password anywhere else.
-     */
     let lastObsScan = [];
     ipcMain.handle('find-obs', async () => {
         try {
             lastObsScan = await obsDiscovery.discover();
-            // A name the network now reports for the PC already in use (Network discovery turned on there since).
-            const current = lastObsScan.find((r) => r.url === store.settings().obsUrl);
-            if (current && current.name && current.name !== store.settings().obsName) {
-                store.update({ obsName: current.name });
-                await pushState();
-            }
+            obs.noteScan(lastObsScan);
         } catch (error) {
             log(`Could not search the network for OBS: ${error.message}`);
             lastObsScan = [];
@@ -1279,19 +1265,43 @@ function registerIpc() {
         return lastObsScan;
     });
 
-    ipcMain.handle('use-obs', async (_event, host) => {
-        const row = lastObsScan.find((r) => r.host === String(host));
-        if (!row) {
-            return { ok: false, error: 'Search again: that PC is no longer in the list.' };
+    // `{ host }` adds a PC from the last scan; `{ address }` one typed by hand. Either may carry its password.
+    ipcMain.handle('add-obs', async (_event, { host, address, password } = {}) => {
+        let wanted;
+        if (host) {
+            const row = lastObsScan.find((r) => r.host === String(host));
+            if (!row) {
+                return { ok: false, error: 'Search again: that PC is no longer in the list.' };
+            }
+            wanted = { url: row.url, reported: row.name || '', local: row.local };
+        } else {
+            wanted = { url: String(address || ''), reported: '', local: false };
         }
-        store.update({ obsUrl: row.url, obsName: row.name || '', obsLocal: row.local });
-        const ok = await obs.connect();
+        const result = await obs.add({ ...wanted, password: password ? String(password) : '' });
         await pushState();
-        return { ok, needsPassword: !ok && obs.passwordProblem };
+        return result;
     });
 
-    // Start or stop the stream on the connected OBS. The Undo window before a stop lives in the renderer.
-    ipcMain.handle('set-streaming', async (_event, on) => obs.setStreaming(Boolean(on)));
+    ipcMain.handle('remove-obs', async (_event, id) => {
+        const ok = await obs.remove(String(id));
+        await pushState();
+        return ok;
+    });
+
+    ipcMain.handle('rename-obs', async (_event, { id, name } = {}) => {
+        const ok = obs.rename(String(id), String(name || ''));
+        await pushState();
+        return ok;
+    });
+
+    ipcMain.handle('set-live-obs', async (_event, id) => {
+        const ok = obs.setLive(String(id));
+        await pushState();
+        return ok;
+    });
+
+    // Start or stop the stream on one OBS. The Undo window before a stop lives in the renderer.
+    ipcMain.handle('set-streaming', async (_event, { id, on } = {}) => obs.setStreaming(id ? String(id) : null, Boolean(on)));
 
     /*
      * Turn GreenSplit on. `pasted` is a Connection URL straight from GreenSplit (or empty to reconnect with the saved
@@ -1344,7 +1354,8 @@ function registerIpc() {
         return result.ok ? result.data : [];
     });
 
-    ipcMain.handle('get-scenes', async () => obs.getSceneList());
+    // Overlays go into the OBS that goes live.
+    ipcMain.handle('get-scenes', async () => (obs.live ? obs.live.getSceneList() : []));
 
     /** Open (or focus) the dashboard window. `dashboardId` is optional — without it the picker page loads. */
     ipcMain.handle('open-dashboard', async (_event, dashboardId) => openDashboardWindow(dashboardId));
@@ -1446,7 +1457,8 @@ function registerIpc() {
      * The URL is never shown or copied anywhere.
      */
     ipcMain.handle('add-overlay-to-obs', async (_event, { overlayId, overlayName, sceneName, width, height }) => {
-        if (!obs.connected) {
+        const target = obs.live;
+        if (!target || !target.connected) {
             return { ok: false, error: 'Not connected to OBS.' };
         }
         const key = await lbcbot.createOverlayKey(overlayId, `OBS browser source - ${overlayName || overlayId}`);
@@ -1460,7 +1472,7 @@ function registerIpc() {
         const url = `${siteUrl}/component-view?isComponentView=true&componentType=OVERLAY&data=${payload}`;
 
         try {
-            const result = await obs.createBrowserSource({
+            const result = await target.createBrowserSource({
                 sceneName,
                 inputName: `LBCBot - ${overlayName || overlayId}`,
                 url,
@@ -1521,7 +1533,7 @@ app.whenReady().then(async () => {
         await startDeviceControl();
     }
     if (settings.autoConnectObs) {
-        await obs.connect();
+        await obs.connectAll();
     }
     // Not awaited: GreenSplit is often opened after this app, and the bridge keeps trying in the background. Only if
     // it was left on: a Disconnect means off until the next Connect, restarts included.
@@ -1580,7 +1592,7 @@ app.on('window-all-closed', () => {
         updater.stop();
     }
     if (obs) {
-        obs.disconnect();
+        obs.disconnectAll();
     }
     if (greensplit) {
         greensplit.disconnect(); // closing the app is not turning GreenSplit off, so LBCBot is not told

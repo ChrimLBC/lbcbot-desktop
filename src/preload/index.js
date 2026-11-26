@@ -12,19 +12,22 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('lbcbot', {
     getState: () => ipcRenderer.invoke('get-state'),
     updateSettings: (patch) => ipcRenderer.invoke('update-settings', patch),
-    setObsPassword: (password) => ipcRenderer.invoke('set-obs-password', password),
 
     // LBCBot accounts on this computer. The pane names them by an id of this app's own; credentials stay in main.
     addAccount: () => ipcRenderer.invoke('add-account'),
     switchAccount: (id) => ipcRenderer.invoke('switch-account', id),
     removeAccount: (id) => ipcRenderer.invoke('remove-account', id),
 
-    connectObs: () => ipcRenderer.invoke('connect-obs'),
-    disconnectObs: () => ipcRenderer.invoke('disconnect-obs'),
-    // OBS on another PC: search the LAN, pick one from the results by address, and start or stop its stream.
+    // The OBS connections (several: the source PC's and the streaming PC's). Each is named by its id; a password goes
+    // one way, to the main process, and is never sent back.
     findObs: () => ipcRenderer.invoke('find-obs'),
-    useObs: (host) => ipcRenderer.invoke('use-obs', host),
-    setStreaming: (on) => ipcRenderer.invoke('set-streaming', on),
+    addObs: (options) => ipcRenderer.invoke('add-obs', options),
+    removeObs: (id) => ipcRenderer.invoke('remove-obs', id),
+    renameObs: (id, name) => ipcRenderer.invoke('rename-obs', { id, name }),
+    setLiveObs: (id) => ipcRenderer.invoke('set-live-obs', id),
+    connectObs: (id, password) => ipcRenderer.invoke('obs-connect', { id, password }),
+    disconnectObs: (id) => ipcRenderer.invoke('obs-disconnect', id),
+    setStreaming: (id, on) => ipcRenderer.invoke('set-streaming', { id, on }),
 
     // GreenSplit. The pasted Connection URL goes one way: its token is kept in the main process and never sent back.
     connectGreenSplit: (connectionUrl) => ipcRenderer.invoke('connect-greensplit', connectionUrl),

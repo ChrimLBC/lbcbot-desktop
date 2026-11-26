@@ -35,12 +35,6 @@ function setStatus(name, on) {
     setPill(el(`${name}-status`), on, 'Online', 'Offline');
     el(`${name}-dot`).className = `dot ${on ? 'dot--on' : 'dot--off'}`;
 
-    // Only offer what can happen now: Connect while offline, Disconnect while connected.
-    if (name === 'obs') {
-        el('obs-connect').hidden = !!on;
-        el('obs-disconnect').hidden = !on;
-    }
-
     /*
      * Mirror it onto the card that owns the action, where one exists.
      *
@@ -72,7 +66,7 @@ const PANE_REFRESH = {
     templates: () => refreshTemplates(),
     overlays: () => refreshOverlays(),
     dashboards: () => refreshDashboards(),
-    settings: () => refreshPlatforms(),
+    settings: () => { refreshPlatforms(); setTimeout(maybeAutoOpenObsAdd); },
 };
 
 function showPane(name) {
@@ -145,93 +139,73 @@ function applyUpdateStatus(status) {
     }
 }
 
-/* ------------------------------------------------------------------ GreenSplit */
+/* ------------------------------------------------------------------ OBS */
 
-const OBS_HINT = 'In OBS, open Tools → WebSocket Server Settings, turn it on, and copy the password here.';
+/*
+ * The OBS card: one row per connection (2026-11-26, HANDOFF-obs-multi). A row is its state dot, its name (rename in
+ * place), the address small beside it, "Goes live" on the streaming one when there are several, and under it the one
+ * thing that row needs now: the stream line (Start, Stop with Undo) while connected, a password field while OBS wants
+ * one, Connect after a Disconnect. Everything else is in its ⋯ menu.
+ *
+ * Adding is one panel that scans the moment it opens. A found PC is added with one click, or, when its OBS has a
+ * password, a field opens in place on that row. A wrong password shows under the field and the row stays open.
+ */
+
 const OBS_STATE_TEXT = {
     connecting: 'Connecting…',
     retrying: 'Waiting for OBS…',
     'bad-password': 'Wrong password',
     'needs-password': 'Needs password',
-    off: 'Not connected',
+    off: 'Disconnected',
 };
-const LOCK_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>';
-/** Seconds of Undo before a Stop is sent: ending a stream by a stray click is the one mistake that can't be taken back. */
+const OBS_ICON = {
+    more: '<svg viewBox="0 0 24 24" fill="currentColor" stroke="none" aria-hidden="true"><circle cx="5" cy="12" r="1.9"/><circle cx="12" cy="12" r="1.9"/><circle cx="19" cy="12" r="1.9"/></svg>',
+    rename: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>',
+    live: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="2"/><path d="M16.24 7.76a6 6 0 0 1 0 8.49"/><path d="M7.76 16.24a6 6 0 0 1 0-8.49"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/><path d="M4.93 19.07a10 10 0 0 1 0-14.14"/></svg>',
+    power: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg>',
+    remove: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>',
+    start: '<svg viewBox="0 0 24 24" fill="currentColor" stroke="none" aria-hidden="true"><polygon points="7 4 20 12 7 20 7 4"/></svg>',
+    stop: '<svg viewBox="0 0 24 24" fill="currentColor" stroke="none" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1.5"/></svg>',
+    lock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>',
+    chevron: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>',
+    check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>',
+};
+/** Seconds of Undo before a Stop or a Remove is sent: ending a stream by a stray click can't be taken back. */
 const STOP_UNDO_SECONDS = 5;
 
-let obsStatus = null;
-let obsSettings = {};
-let obsFound = null; // the last scan's rows, or null while none has run
-let obsSearching = false;
-let obsStop = null; // { left, timer } while a Stop waits out its Undo
-let obsBusy = false; // a Start or Stop is on its way to OBS
-let obsTicker = null;
+const obs = {
+    known: false, // a status has arrived (until then the list isn't "empty", just not read yet)
+    conns: [],
+    stops: new Map(), // id -> { left, timer } while a Stop waits out its Undo
+    removing: new Map(), // id -> { left, timer, name } while a Remove waits out its Undo
+    busy: new Set(), // ids with a Start, Stop or Connect on its way
+    rowMsg: new Map(), // id -> an error for that row (a Start that failed)
+    drafts: new Map(), // id -> a password being typed into that row, kept across redraws
+    renaming: null,
+    ticker: null,
+    // The add panel.
+    panel: false,
+    autoOpened: false,
+    scanning: false,
+    found: null, // the last scan's rows, or null before one
+    expanded: null, // the host whose password field is open
+    adding: null, // the host (or 'typed') being added now
+    foundMsg: null, // { host, text } under that row's field
+    menuFor: null,
+};
 
-/** The card's hint line doubles as its error line, so an error shows where you're looking and nothing shifts. */
-function setObsHint(error) {
-    const hint = el('obs-hint');
-    hint.textContent = error || OBS_HINT;
-    hint.className = `hint${error ? ' hint--bad' : ''}`;
+function obsConn(id) {
+    return obs.conns.find((c) => c.id === id) || null;
 }
 
-function obsHost() {
-    try { return new URL(obsSettings.obsUrl).hostname; } catch (error) { return obsSettings.obsUrl || ''; }
-}
-
-/** A PC's name: the one given in the app, else what the network reported, else nothing (its address shows). */
-function obsNameFor(host, reported, local) {
-    const given = (obsSettings.obsNames || {})[host];
-    if (given) return given;
-    if (local) return 'This PC';
-    return reported || '';
-}
-
-function obsPlace() {
-    const host = obsHost();
-    const local = obsSettings.obsLocal !== false;
-    const name = obsNameFor(host, obsSettings.obsName, local);
-    // The address beside a name, small; never beside "This PC" (127.0.0.1 tells nobody anything).
-    return { name: name || host, host: name && !local ? host : '' };
-}
-
-function startObsRename() {
-    const input = el('obs-rename-input');
-    input.value = (obsSettings.obsNames || {})[obsHost()] || obsPlace().name;
-    el('obs-where').hidden = true;
-    el('obs-rename').hidden = true;
-    input.hidden = false;
-    input.focus();
-    input.select();
-}
-
-/** Save (or with `save` false, drop) the rename. An empty name goes back to the reported one. */
-async function endObsRename(save) {
-    const input = el('obs-rename-input');
-    if (input.hidden) return;
-    input.hidden = true;
-    el('obs-where').hidden = false;
-    el('obs-rename').hidden = false;
-    if (!save) return;
-    const host = obsHost();
-    const names = { ...(obsSettings.obsNames || {}) };
-    const name = input.value.trim().slice(0, 40);
-    if (name) names[host] = name;
-    else delete names[host];
-    obsSettings = { ...obsSettings, obsNames: names };
-    renderObsWhere();
-    if (obsFound) renderObsFound();
-    await window.lbcbot.updateSettings({ obsNames: names });
-}
-
-function renderObsWhere() {
-    const { name, host } = obsPlace();
-    const node = el('obs-where');
-    node.textContent = name;
-    if (host) {
-        const small = document.createElement('small');
-        small.textContent = host;
-        node.appendChild(small);
-    }
+function svgButton(className, title, icon) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = className;
+    button.title = title;
+    button.setAttribute('aria-label', title);
+    button.innerHTML = icon;
+    return button;
 }
 
 function formatUptime(ms) {
@@ -250,172 +224,686 @@ const STREAM_PILL = {
     off: ['Not live', 'pill--off', ''],
 };
 
-/** The stream row: what the stream is doing, and the one action that fits it. */
-function renderObsStream() {
-    const connected = !!(obsStatus && obsStatus.connected);
-    el('obs-stream').hidden = !connected;
-    if (!connected) {
-        cancelObsStop();
-        clearInterval(obsTicker);
-        obsTicker = null;
-        return;
-    }
-    const stream = obsStatus.stream || { state: 'off' };
-    const live = el('obs-live');
-    const note = el('obs-stream-note');
+function livePillText(stream) {
+    return stream.startedAt != null ? `Live ${formatUptime(Date.now() - stream.startedAt)}` : 'Live';
+}
+
+/** The row's second line while connected: what the stream is doing, and the one action that fits it. */
+function streamLine(conn) {
+    const line = document.createElement('div');
+    line.className = 'obs-row__body obs-stream';
+    const stream = conn.stream || { state: 'off' };
+    const stop = obs.stops.get(conn.id);
     let [text, tone, hint] = STREAM_PILL[stream.state] || STREAM_PILL.off;
+    const pill = document.createElement('span');
     if (stream.state === 'live') {
-        text = stream.startedAt != null ? `Live ${formatUptime(Date.now() - stream.startedAt)}` : 'Live';
+        text = livePillText(stream);
         tone = 'pill--live';
+        if (stream.startedAt != null) pill.dataset.started = String(stream.startedAt);
     }
-    if (obsStop) hint = `Ending in ${obsStop.left} s`;
-    live.textContent = text;
-    live.className = `pill ${tone}`;
+    if (stop) hint = `Ending in ${stop.left} s`;
+    if (obs.rowMsg.get(conn.id)) hint = obs.rowMsg.get(conn.id);
+    pill.className = `pill ${tone}`;
+    pill.textContent = text;
+    const note = document.createElement('span');
+    note.className = `obs-stream__note${obs.rowMsg.get(conn.id) ? ' hint--bad' : ''}`;
     note.textContent = hint;
+    line.append(pill, note);
 
     const streaming = ['live', 'reconnecting', 'starting'].includes(stream.state);
-    el('obs-start').hidden = streaming || stream.state === 'stopping' || !!obsStop;
-    el('obs-stop').hidden = !streaming || !!obsStop;
-    el('obs-undo').hidden = !obsStop;
-    el('obs-start').disabled = obsBusy;
-    el('obs-stop').disabled = obsBusy;
+    const busy = obs.busy.has(conn.id);
+    if (stop) {
+        const undo = document.createElement('button');
+        undo.type = 'button';
+        undo.className = 'obs-undo';
+        undo.textContent = 'Undo';
+        undo.dataset.focusKey = `undo:${conn.id}`;
+        undo.addEventListener('click', () => {
+            cancelObsStop(conn.id);
+            renderObs();
+            focusKey(`stop:${conn.id}`);
+        });
+        line.appendChild(undo);
+    } else if (streaming) {
+        const stopBtn = svgButton('icon-btn icon-btn--danger', 'Stop streaming', OBS_ICON.stop);
+        stopBtn.dataset.focusKey = `stop:${conn.id}`;
+        stopBtn.disabled = busy;
+        stopBtn.addEventListener('click', () => startObsStop(conn.id));
+        line.appendChild(stopBtn);
+    } else if (stream.state !== 'stopping') {
+        const go = svgButton('icon-btn obs-stream__go', 'Start streaming', OBS_ICON.start);
+        go.dataset.focusKey = `start:${conn.id}`;
+        go.disabled = busy;
+        go.addEventListener('click', () => setObsStreaming(conn.id, true));
+        line.appendChild(go);
+    }
+    return line;
+}
 
-    // A 1 s tick only while the uptime is on screen and counting.
-    const ticking = stream.startedAt != null && streaming;
-    if (ticking && !obsTicker) {
-        obsTicker = setInterval(renderObsStream, 1000);
-    } else if (!ticking && obsTicker) {
-        clearInterval(obsTicker);
-        obsTicker = null;
+/** The row's second line while OBS wants a password: the field, in place, with the problem under it. */
+function passwordLine(conn) {
+    const form = document.createElement('form');
+    form.className = 'obs-row__body obs-pw';
+    form.autocomplete = 'off';
+    const input = document.createElement('input');
+    input.type = 'password';
+    input.placeholder = 'OBS WebSocket password';
+    input.setAttribute('aria-label', `Password for ${conn.displayName}`);
+    input.value = obs.drafts.get(conn.id) || '';
+    input.dataset.focusKey = `pw:${conn.id}`;
+    input.addEventListener('input', () => obs.drafts.set(conn.id, input.value));
+    const go = document.createElement('button');
+    go.type = 'submit';
+    go.className = 'primary';
+    go.textContent = 'Connect';
+    go.disabled = obs.busy.has(conn.id);
+    form.append(input, go);
+    form.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        if (!input.value) {
+            input.focus();
+            return;
+        }
+        obs.busy.add(conn.id);
+        renderObs();
+        try {
+            const result = await window.lbcbot.connectObs(conn.id, input.value);
+            if (result && result.ok) obs.drafts.delete(conn.id);
+        } finally {
+            obs.busy.delete(conn.id);
+            renderObs();
+            if (obsConn(conn.id) && obsConn(conn.id).state === 'bad-password') focusKey(`pw:${conn.id}`, true);
+        }
+    });
+    const msg = document.createElement('p');
+    msg.className = 'hint obs-pw__msg';
+    msg.textContent = 'It\'s in OBS on that PC, under Tools → WebSocket Server Settings.';
+    form.appendChild(msg);
+    return form;
+}
+
+function rowHead(conn) {
+    const head = document.createElement('div');
+    head.className = 'obs-row__head';
+    const on = conn.state === 'connected';
+    const bad = conn.state === 'bad-password' || conn.state === 'needs-password';
+    const dot = document.createElement('span');
+    dot.className = `dot ${on ? 'dot--on' : bad ? 'dot--bad' : conn.state === 'retrying' || conn.state === 'connecting' ? 'dot--wait' : 'dot--off'}`;
+    head.appendChild(dot);
+
+    if (obs.renaming === conn.id) {
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.className = 'obs-rename';
+        input.maxLength = 40;
+        input.spellcheck = false;
+        input.value = conn.displayName;
+        input.setAttribute('aria-label', 'Name for this OBS');
+        input.dataset.focusKey = `rename:${conn.id}`;
+        let done = false;
+        const finish = async (save) => {
+            if (done) return;
+            done = true;
+            obs.renaming = null;
+            const name = input.value.trim();
+            if (save && name !== conn.displayName) {
+                // An empty name, or "This PC" on this PC, goes back to the default.
+                const next = conn.local && name === 'This PC' ? '' : name;
+                conn.name = next;
+                conn.displayName = next || (conn.local ? 'This PC' : conn.host);
+                renderObs();
+                await window.lbcbot.renameObs(conn.id, next);
+            } else {
+                renderObs();
+            }
+        };
+        input.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter') finish(true);
+            if (event.key === 'Escape') { event.stopPropagation(); finish(false); }
+        });
+        input.addEventListener('blur', () => finish(true));
+        head.appendChild(input);
+    } else {
+        const name = document.createElement('span');
+        name.className = 'obs-row__name';
+        name.title = 'Double-click to rename';
+        name.textContent = conn.displayName;
+        // The address beside a name, small; never beside "This PC" (127.0.0.1 tells nobody anything).
+        if (!conn.local && conn.displayName !== conn.host) {
+            const small = document.createElement('small');
+            small.textContent = conn.host;
+            name.appendChild(small);
+        }
+        name.addEventListener('dblclick', () => startObsRename(conn.id));
+        head.appendChild(name);
+    }
+
+    // "Goes live" only means something next to another OBS.
+    if (conn.live && obs.conns.length > 1) {
+        const badge = document.createElement('span');
+        badge.className = 'obs-badge';
+        badge.title = 'Start and Stop on your dashboards, and your OBS triggers, use this OBS';
+        badge.innerHTML = OBS_ICON.live;
+        badge.appendChild(document.createTextNode('Goes live'));
+        head.appendChild(badge);
+    }
+    if (!on) {
+        const state = document.createElement('span');
+        state.className = `obs-row__state${bad ? ' obs-row__state--bad' : ''}`;
+        state.textContent = OBS_STATE_TEXT[conn.state] || 'Disconnected';
+        head.appendChild(state);
+    }
+    const more = svgButton('icon-btn obs-more', 'More', OBS_ICON.more);
+    more.dataset.focusKey = `more:${conn.id}`;
+    more.setAttribute('aria-haspopup', 'menu');
+    more.setAttribute('aria-expanded', String(obs.menuFor === conn.id));
+    more.addEventListener('click', (event) => {
+        event.stopPropagation();
+        toggleObsMenu(conn.id, more);
+    });
+    head.appendChild(more);
+    return head;
+}
+
+function obsRow(conn) {
+    const li = document.createElement('li');
+    li.dataset.id = conn.id;
+    const removing = obs.removing.get(conn.id);
+    if (removing) {
+        li.className = 'obs-row obs-row--gone';
+        const text = document.createElement('span');
+        text.className = 'obs-row__gone';
+        text.textContent = `Removed ${removing.name}`;
+        const left = document.createElement('span');
+        left.className = 'obs-row__left';
+        left.textContent = `${removing.left} s`;
+        const undo = document.createElement('button');
+        undo.type = 'button';
+        undo.className = 'obs-undo';
+        undo.textContent = 'Undo';
+        undo.dataset.focusKey = `unremove:${conn.id}`;
+        undo.addEventListener('click', () => {
+            cancelObsRemove(conn.id);
+            renderObs();
+            focusKey(`more:${conn.id}`);
+        });
+        li.append(text, left, undo);
+        return li;
+    }
+    li.className = 'obs-row';
+    li.appendChild(rowHead(conn));
+    if (conn.state === 'connected') {
+        li.appendChild(streamLine(conn));
+    } else if (conn.state === 'needs-password' || conn.state === 'bad-password') {
+        li.appendChild(passwordLine(conn));
+    } else if (conn.state === 'retrying' && conn.error) {
+        const why = document.createElement('p');
+        why.className = 'hint obs-row__why';
+        why.textContent = conn.error;
+        li.appendChild(why);
+    } else if (conn.state === 'off') {
+        const body = document.createElement('div');
+        body.className = 'obs-row__body';
+        const go = document.createElement('button');
+        go.type = 'button';
+        go.textContent = 'Connect';
+        go.disabled = obs.busy.has(conn.id);
+        go.dataset.focusKey = `connect:${conn.id}`;
+        go.addEventListener('click', () => connectObsRow(conn.id));
+        body.appendChild(go);
+        li.appendChild(body);
+    }
+    return li;
+}
+
+/** Restore focus to the control with this key after a redraw (the row's DOM is rebuilt). */
+function focusKey(key, select = false) {
+    const node = document.querySelector(`[data-focus-key="${CSS.escape(key)}"]`);
+    if (node) {
+        node.focus();
+        if (select && node.select) node.select();
+    }
+}
+
+function renderObs() {
+    const active = document.activeElement && document.activeElement.dataset ? document.activeElement.dataset.focusKey : null;
+    const list = el('obs-list');
+    list.replaceChildren(...obs.conns.map(obsRow));
+    el('obs-empty').hidden = !obs.known || obs.conns.length > 0;
+    el('obs-add').hidden = obs.panel;
+    renderObsPanel();
+    if (active) focusKey(active);
+    if (obs.renaming) focusKey(`rename:${obs.renaming}`, true);
+    tickObs();
+}
+
+/** A 1 s tick only while an uptime or a countdown is on screen. */
+function tickObs() {
+    const counting = obs.conns.some((c) => c.state === 'connected' && c.stream && c.stream.state === 'live' && c.stream.startedAt != null);
+    if (counting && !obs.ticker) {
+        obs.ticker = setInterval(() => {
+            document.querySelectorAll('#obs-list [data-started]').forEach((pill) => {
+                pill.textContent = `Live ${formatUptime(Date.now() - Number(pill.dataset.started))}`;
+            });
+        }, 1000);
+    } else if (!counting && obs.ticker) {
+        clearInterval(obs.ticker);
+        obs.ticker = null;
     }
 }
 
 function applyObsStatus(status) {
-    if (!status) return;
-    obsStatus = status;
-    const on = status.state === 'connected';
-    const bad = status.state === 'bad-password' || status.state === 'needs-password';
-    el('obs-conn-dot').className = `dot ${on ? 'dot--on' : bad ? 'dot--bad' : 'dot--off'}`;
-    el('obs-conn-text').textContent = on ? 'Connected' : (OBS_STATE_TEXT[status.state] || 'Not connected');
-    setPill(el('obs-status'), on, 'Online', 'Offline');
-    el('obs-dot').className = `dot ${on ? 'dot--on' : 'dot--off'}`;
-    // Connect only when nothing is trying; Disconnect also stops a reconnect loop that's waiting for the other PC.
-    const idle = ['off', 'bad-password', 'needs-password'].includes(status.state);
-    el('obs-connect').hidden = !idle;
-    el('obs-disconnect').hidden = idle;
-    setObsHint(on ? null : status.error);
-    // Setup words are for setting up: once connected the line goes (an error still shows, in the same place).
-    el('obs-hint').hidden = on;
-    // Connected to the PC that was picked: the search is done, so fold the list away.
-    if (on && obsFound && obsFound.some((row) => row.url === status.url)) obsFound = null;
-    renderObsFound();
-    renderObsStream();
-}
-
-function emptyRow(text) {
-    const li = document.createElement('li');
-    li.className = 'is-empty';
-    li.textContent = text;
-    return li;
-}
-
-function renderObsFound() {
-    const list = el('obs-found');
-    list.hidden = !obsSearching && obsFound === null;
-    list.replaceChildren();
-    if (obsSearching) {
-        list.appendChild(emptyRow('Searching this network…'));
-        return;
+    if (!status || !Array.isArray(status.connections)) return;
+    const first = !obs.known;
+    obs.known = true;
+    obs.conns = status.connections;
+    // A stop or a remove waiting on a connection that has gone (or dropped) has nothing to act on.
+    for (const id of [...obs.stops.keys()]) {
+        const conn = obsConn(id);
+        if (!conn || conn.state !== 'connected') cancelObsStop(id);
     }
-    if (!obsFound) return;
-    if (!obsFound.length) {
-        list.appendChild(emptyRow('No OBS found. On that PC, turn on Tools → WebSocket Server Settings and allow OBS through its firewall on private networks.'));
-        return;
+    for (const id of [...obs.removing.keys()]) {
+        if (!obsConn(id)) cancelObsRemove(id);
     }
-    obsFound.forEach((row) => {
-        const li = document.createElement('li');
-        const current = row.url === obsSettings.obsUrl && obsStatus && obsStatus.connected;
-        if (current) li.className = 'is-current';
-        const name = document.createElement('span');
-        name.className = 'list__name';
-        const label = obsNameFor(row.host, row.name, row.local);
-        name.textContent = label || row.host;
-        const meta = document.createElement('span');
-        meta.className = 'list__meta';
-        // The address only when there's a name above it: a PC that told us no name is already listed by address.
-        meta.textContent = current ? 'Connected' : (label ? row.host : '');
-        li.append(name, meta);
-        if (row.authRequired) {
-            const lock = document.createElement('span');
-            lock.title = 'Needs its WebSocket password';
-            lock.innerHTML = LOCK_ICON;
-            li.appendChild(lock);
-        }
-        if (!current) li.addEventListener('click', () => useObs(row));
-        list.appendChild(li);
-    });
+    if (obs.menuFor && !obsConn(obs.menuFor)) closeObsMenu();
+    if (first) maybeAutoOpenObsAdd();
+    renderObs();
 }
 
-async function findObs() {
-    obsSearching = true;
-    el('obs-find').disabled = true;
-    renderObsFound();
+function startObsRename(id) {
+    closeObsMenu();
+    obs.renaming = id;
+    renderObs();
+}
+
+async function connectObsRow(id) {
+    obs.busy.add(id);
+    renderObs();
     try {
-        obsFound = await window.lbcbot.findObs();
+        await window.lbcbot.connectObs(id);
     } finally {
-        obsSearching = false;
-        el('obs-find').disabled = false;
-        renderObsFound();
+        obs.busy.delete(id);
+        renderObs();
     }
 }
 
-async function useObs(row) {
-    // A typed password goes with the pick, so choosing a PC that needs one is one click once it's in the field.
-    if (el('obs-password').value) await window.lbcbot.setObsPassword(el('obs-password').value);
-    const result = await window.lbcbot.useObs(row.host);
-    if (result && result.ok) {
-        obsFound = null; // done: fold the list away
-        renderObsFound();
-    } else if (result && result.needsPassword) {
-        el('obs-password').focus();
-    } else if (result && result.error) {
-        setObsHint(result.error);
-    }
-}
-
-async function setStreaming(on) {
-    obsBusy = true;
-    renderObsStream();
+async function setObsStreaming(id, on) {
+    obs.busy.add(id);
+    obs.rowMsg.delete(id);
+    renderObs();
     try {
-        const result = await window.lbcbot.setStreaming(on);
-        setObsHint(result && !result.ok ? result.error : null);
+        const result = await window.lbcbot.setStreaming(id, on);
+        if (result && !result.ok) obs.rowMsg.set(id, result.error);
     } finally {
-        obsBusy = false;
-        renderObsStream();
+        obs.busy.delete(id);
+        renderObs();
     }
 }
 
 /** Stop waits STOP_UNDO_SECONDS with Undo in place of the Stop button, then sends. */
-function startObsStop() {
-    cancelObsStop();
-    obsStop = { left: STOP_UNDO_SECONDS, timer: null };
-    obsStop.timer = setInterval(() => {
-        obsStop.left -= 1;
-        if (obsStop.left <= 0) {
-            cancelObsStop();
-            setStreaming(false);
+function startObsStop(id) {
+    cancelObsStop(id);
+    const stop = { left: STOP_UNDO_SECONDS, timer: null };
+    stop.timer = setInterval(() => {
+        stop.left -= 1;
+        if (stop.left <= 0) {
+            cancelObsStop(id);
+            setObsStreaming(id, false);
         } else {
-            renderObsStream();
+            renderObs();
         }
     }, 1000);
-    renderObsStream();
-    el('obs-undo').focus();
+    obs.stops.set(id, stop);
+    renderObs();
+    focusKey(`undo:${id}`);
 }
 
-function cancelObsStop() {
-    if (obsStop) clearInterval(obsStop.timer);
-    obsStop = null;
+function cancelObsStop(id) {
+    const stop = obs.stops.get(id);
+    if (stop) clearInterval(stop.timer);
+    obs.stops.delete(id);
 }
+
+/** Remove: the row turns into "Removed … Undo" for STOP_UNDO_SECONDS, and only then is it forgotten. */
+function startObsRemove(id) {
+    closeObsMenu();
+    const conn = obsConn(id);
+    if (!conn) return;
+    cancelObsStop(id);
+    const removing = { left: STOP_UNDO_SECONDS, timer: null, name: conn.displayName };
+    removing.timer = setInterval(async () => {
+        removing.left -= 1;
+        if (removing.left <= 0) {
+            cancelObsRemove(id);
+            obs.conns = obs.conns.filter((c) => c.id !== id); // gone at once; the status that follows agrees
+            renderObs();
+            await window.lbcbot.removeObs(id);
+        } else {
+            renderObs();
+        }
+    }, 1000);
+    obs.removing.set(id, removing);
+    renderObs();
+    focusKey(`unremove:${id}`);
+}
+
+function cancelObsRemove(id) {
+    const removing = obs.removing.get(id);
+    if (removing) clearInterval(removing.timer);
+    obs.removing.delete(id);
+}
+
+/* ---- the ⋯ menu */
+
+function menuItem(icon, text, onClick, danger) {
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.className = `plan__menuitem${danger ? ' obs-menu__danger' : ''}`;
+    item.setAttribute('role', 'menuitem');
+    item.innerHTML = icon;
+    item.appendChild(document.createTextNode(text));
+    item.addEventListener('click', (event) => {
+        event.stopPropagation();
+        closeObsMenu();
+        onClick();
+    });
+    return item;
+}
+
+function toggleObsMenu(id, anchor) {
+    if (obs.menuFor === id) {
+        closeObsMenu();
+        return;
+    }
+    const conn = obsConn(id);
+    if (!conn) return;
+    const menu = el('obs-menu');
+    const items = [menuItem(OBS_ICON.rename, 'Rename', () => startObsRename(id))];
+    if (!conn.live && obs.conns.length > 1) {
+        items.push(menuItem(OBS_ICON.live, 'Make this the one that goes live', async () => {
+            obs.conns = obs.conns.map((c) => ({ ...c, live: c.id === id }));
+            renderObs();
+            await window.lbcbot.setLiveObs(id);
+        }));
+    }
+    const idle = ['off', 'bad-password', 'needs-password'].includes(conn.state);
+    items.push(idle
+        ? menuItem(OBS_ICON.power, 'Connect', () => connectObsRow(id))
+        : menuItem(OBS_ICON.power, 'Disconnect', () => window.lbcbot.disconnectObs(id)));
+    items.push(menuItem(OBS_ICON.remove, 'Remove', () => startObsRemove(id), true));
+    menu.replaceChildren(...items);
+    // Under the ⋯, its right edge on the button's, inside the card.
+    const card = el('obs-card').getBoundingClientRect();
+    const at = anchor.getBoundingClientRect();
+    menu.style.top = `${at.bottom - card.top + 4}px`;
+    menu.style.right = `${card.right - at.right}px`;
+    menu.hidden = false;
+    obs.menuFor = id;
+    anchor.setAttribute('aria-expanded', 'true');
+    menu.querySelector('button').focus();
+}
+
+function closeObsMenu() {
+    if (!obs.menuFor) return;
+    const id = obs.menuFor;
+    obs.menuFor = null;
+    el('obs-menu').hidden = true;
+    const more = document.querySelector(`[data-focus-key="more:${CSS.escape(id)}"]`);
+    if (more) more.setAttribute('aria-expanded', 'false');
+}
+
+/* ---- the add panel */
+
+/** A found PC already in the list: the same address, or this PC under any of its addresses. */
+function obsAdded(row) {
+    return obs.conns.some((c) => c.url === row.url || (row.local && c.local && c.url.split(':').pop() === row.url.split(':').pop()));
+}
+
+function foundRowLabel(row) {
+    const known = obs.conns.find((c) => c.url === row.url);
+    if (known && known.name) return { name: known.name, meta: row.host };
+    if (row.local) return { name: 'This PC', meta: '' };
+    return row.name ? { name: row.name, meta: row.host } : { name: row.host, meta: '' };
+}
+
+function renderObsPanel() {
+    const panel = el('obs-addpanel');
+    panel.hidden = !obs.panel;
+    if (!obs.panel) return;
+    el('obs-rescan').disabled = obs.scanning;
+    el('obs-rescan').classList.toggle('is-spinning', obs.scanning);
+    const list = el('obs-found');
+    const rows = [];
+    if (obs.scanning && !obs.found) {
+        const li = document.createElement('li');
+        li.className = 'obs-found__empty';
+        li.innerHTML = '<span class="plan__spin" aria-hidden="true"></span>';
+        li.appendChild(document.createTextNode('Looking for OBS on your network…'));
+        rows.push(li);
+    } else if (obs.found && !obs.found.length) {
+        const li = document.createElement('li');
+        li.className = 'obs-found__empty';
+        li.textContent = 'No OBS found on your network.';
+        rows.push(li);
+    }
+    (obs.found || []).forEach((row) => rows.push(foundRow(row)));
+    list.replaceChildren(...rows);
+}
+
+function foundRow(row) {
+    const li = document.createElement('li');
+    const added = obsAdded(row);
+    const open = obs.expanded === row.host && !added;
+    const adding = obs.adding === row.host;
+    li.className = `obs-found__row${added ? ' is-added' : ''}${open ? ' is-open' : ''}`;
+    const main = document.createElement('button');
+    main.type = 'button';
+    main.className = 'obs-found__main';
+    main.disabled = added || adding;
+    main.dataset.focusKey = `found:${row.host}`;
+    const { name, meta } = foundRowLabel(row);
+    const nameEl = document.createElement('span');
+    nameEl.className = 'obs-found__name';
+    nameEl.textContent = name;
+    if (meta) {
+        const small = document.createElement('small');
+        small.textContent = meta;
+        nameEl.appendChild(small);
+    }
+    main.appendChild(nameEl);
+    const tag = document.createElement('span');
+    tag.className = 'obs-found__tag';
+    if (added) {
+        tag.innerHTML = OBS_ICON.check;
+        tag.appendChild(document.createTextNode('Added'));
+    } else if (adding) {
+        tag.innerHTML = '<span class="plan__spin" aria-hidden="true"></span>';
+        tag.appendChild(document.createTextNode('Connecting…'));
+    } else if (row.authRequired) {
+        tag.innerHTML = OBS_ICON.lock;
+        tag.appendChild(document.createTextNode('Needs password'));
+    }
+    main.appendChild(tag);
+    if (!added && !adding) {
+        const go = document.createElement('span');
+        go.className = 'obs-found__go';
+        go.innerHTML = OBS_ICON.chevron;
+        main.appendChild(go);
+    }
+    main.title = added ? 'Already added' : row.authRequired ? 'Enter its password to add it' : 'Add this OBS';
+    main.addEventListener('click', () => {
+        if (row.authRequired) {
+            obs.expanded = open ? null : row.host;
+            obs.foundMsg = null;
+            renderObsPanel();
+            if (!open) focusKey(`foundpw:${row.host}`);
+        } else {
+            addFoundObs(row, '');
+        }
+    });
+    li.appendChild(main);
+
+    if (open) {
+        const form = document.createElement('form');
+        form.className = 'obs-found__pw';
+        form.autocomplete = 'off';
+        const input = document.createElement('input');
+        input.type = 'password';
+        input.placeholder = 'OBS WebSocket password';
+        input.setAttribute('aria-label', `Password for ${name}`);
+        input.dataset.focusKey = `foundpw:${row.host}`;
+        input.value = obs.drafts.get(`found:${row.host}`) || '';
+        input.addEventListener('input', () => {
+            obs.drafts.set(`found:${row.host}`, input.value);
+        });
+        const go = document.createElement('button');
+        go.type = 'submit';
+        go.className = 'primary';
+        go.textContent = 'Connect';
+        go.disabled = adding;
+        form.append(input, go);
+        const msg = document.createElement('p');
+        const bad = obs.foundMsg && obs.foundMsg.host === row.host;
+        msg.className = `hint obs-found__msg${bad ? ' hint--bad' : ''}`;
+        msg.textContent = bad ? obs.foundMsg.text : 'It\'s in OBS on that PC, under Tools → WebSocket Server Settings.';
+        form.appendChild(msg);
+        form.addEventListener('submit', (event) => {
+            event.preventDefault();
+            if (!input.value) {
+                input.focus();
+                return;
+            }
+            addFoundObs(row, input.value);
+        });
+        li.appendChild(form);
+    }
+    return li;
+}
+
+async function addFoundObs(row, password) {
+    if (obs.adding) return;
+    obs.adding = row.host;
+    obs.foundMsg = null;
+    renderObsPanel();
+    let result = null;
+    try {
+        result = await window.lbcbot.addObs({ host: row.host, password });
+    } finally {
+        obs.adding = null;
+    }
+    if (result && result.ok) {
+        obs.drafts.delete(`found:${row.host}`);
+        closeObsAdd();
+        return;
+    }
+    if (result && (result.needsPassword || result.badPassword)) {
+        // The scan said no password, or the one typed was wrong: the field opens (or stays open) with why.
+        row.authRequired = true;
+        obs.expanded = row.host;
+    }
+    obs.foundMsg = { host: row.host, text: (result && result.error) || 'Could not connect.' };
+    if (!obs.expanded) obs.expanded = row.host;
+    renderObsPanel();
+    focusKey(`foundpw:${row.host}`, true);
+}
+
+async function scanObs() {
+    if (obs.scanning) return;
+    obs.scanning = true;
+    renderObsPanel();
+    try {
+        obs.found = await window.lbcbot.findObs();
+    } finally {
+        obs.scanning = false;
+        renderObsPanel();
+    }
+}
+
+function openObsAdd() {
+    closeObsMenu();
+    obs.panel = true;
+    obs.expanded = null;
+    obs.foundMsg = null;
+    renderObs();
+    scanObs();
+}
+
+function closeObsAdd() {
+    obs.panel = false;
+    obs.expanded = null;
+    obs.foundMsg = null;
+    el('obs-typed').hidden = true;
+    el('obs-typed-open').hidden = false;
+    el('obs-typed-msg').textContent = '';
+    el('obs-typed-password').value = '';
+    renderObs();
+    if (!el('obs-add').hidden) el('obs-add').focus();
+}
+
+/** With nothing set up, opening Settings opens the add panel (and its scan) by itself: adding is all there is to do. */
+function maybeAutoOpenObsAdd() {
+    if (obs.autoOpened || !obs.known || obs.conns.length || !el('pane-settings').classList.contains('is-active')) return;
+    obs.autoOpened = true;
+    openObsAdd();
+}
+
+async function addTypedObs(event) {
+    event.preventDefault();
+    const address = el('obs-typed-address').value.trim();
+    const msg = el('obs-typed-msg');
+    if (!address) {
+        el('obs-typed-address').focus();
+        return;
+    }
+    if (obs.adding) return;
+    obs.adding = 'typed';
+    el('obs-typed-go').disabled = true;
+    msg.className = 'hint obs-typed__msg';
+    msg.textContent = 'Connecting…';
+    let result = null;
+    try {
+        result = await window.lbcbot.addObs({ address, password: el('obs-typed-password').value });
+    } finally {
+        obs.adding = null;
+        el('obs-typed-go').disabled = false;
+    }
+    if (result && result.ok) {
+        el('obs-typed-address').value = '';
+        closeObsAdd();
+        return;
+    }
+    msg.className = 'hint obs-typed__msg hint--bad';
+    msg.textContent = (result && result.error) || 'Could not connect.';
+    el(result && (result.needsPassword || result.badPassword) ? 'obs-typed-password' : 'obs-typed-address').focus();
+}
+
+function wireObs() {
+    el('obs-add').addEventListener('click', openObsAdd);
+    el('obs-addclose').addEventListener('click', closeObsAdd);
+    el('obs-rescan').addEventListener('click', scanObs);
+    el('obs-typed-open').addEventListener('click', () => {
+        el('obs-typed-open').hidden = true;
+        el('obs-typed').hidden = false;
+        el('obs-typed-address').focus();
+    });
+    el('obs-typed').addEventListener('submit', addTypedObs);
+    el('obs-typed-address').addEventListener('input', () => { el('obs-typed-msg').textContent = ''; });
+    document.addEventListener('click', (event) => {
+        if (obs.menuFor && !el('obs-menu').contains(event.target)) closeObsMenu();
+    });
+    document.addEventListener('keydown', (event) => {
+        if (event.key !== 'Escape') return;
+        if (obs.menuFor) {
+            const id = obs.menuFor;
+            closeObsMenu();
+            focusKey(`more:${id}`);
+        } else if (obs.panel && el('obs-addpanel').contains(document.activeElement)) {
+            closeObsAdd();
+        }
+    });
+}
+
+/* ------------------------------------------------------------------ GreenSplit */
 
 const GS_HINT = 'In GreenSplit: WebSocket Server → Enable, then Copy Connection URL.';
 const GS_STATE_TEXT = {
@@ -729,11 +1217,6 @@ function applyState(state) {
         const assign = (node, value) => {
             if (document.activeElement !== node) node.value = value ?? '';
         };
-        assign(el('obs-url'), state.settings.obsUrl);
-        obsSettings = state.settings;
-        renderObsWhere();
-        // What is saved, masked, so an empty field still says a password is set (like GreenSplit's token).
-        el('obs-password').placeholder = state.hasObsPassword ? '••••••••  (saved)' : 'from OBS → Tools → WebSocket Server Settings';
         el('forward-events').checked = state.settings.forwardObsEvents !== false;
         el('auto-connect').checked = state.settings.autoConnectObs !== false;
         assign(el('gs-port'), state.settings.greensplitLivesplitPort);
@@ -1716,30 +2199,7 @@ function wire() {
     el('refresh-platforms').addEventListener('click', refreshPlatforms);
     el('open-integrations').addEventListener('click', () => window.lbcbot.openIntegrations());
 
-    el('obs-connect').addEventListener('click', async () => {
-        await window.lbcbot.setObsPassword(el('obs-password').value);
-        await window.lbcbot.connectObs();
-        await refreshOverlays();
-    });
-    el('obs-disconnect').addEventListener('click', () => window.lbcbot.disconnectObs());
-    el('obs-password').addEventListener('keydown', (event) => {
-        if (event.key === 'Enter') el('obs-connect').click();
-    });
-    el('obs-find').addEventListener('click', findObs);
-    el('obs-rename').addEventListener('click', startObsRename);
-    el('obs-where').addEventListener('dblclick', startObsRename);
-    el('obs-rename-input').addEventListener('keydown', (event) => {
-        if (event.key === 'Enter') endObsRename(true);
-        if (event.key === 'Escape') endObsRename(false);
-    });
-    el('obs-rename-input').addEventListener('blur', () => endObsRename(true));
-    el('obs-start').addEventListener('click', () => setStreaming(true));
-    el('obs-stop').addEventListener('click', startObsStop);
-    el('obs-undo').addEventListener('click', () => {
-        cancelObsStop();
-        renderObsStream();
-        el('obs-stop').focus();
-    });
+    wireObs();
 
     // Pasting the Connection URL is the whole setup — no button press needed. Enter or Connect does the same.
     el('gs-connect').addEventListener('click', connectGreenSplit);
@@ -1782,13 +2242,11 @@ function wire() {
     });
 
     const persist = () => window.lbcbot.updateSettings({
-        obsUrl: el('obs-url').value.trim(),
         forwardObsEvents: el('forward-events').checked,
         autoConnectObs: el('auto-connect').checked,
         forwardGreensplitEvents: el('gs-forward').checked,
         autoConnectGreensplit: el('gs-auto-connect').checked,
     });
-    el('obs-url').addEventListener('change', persist);
     ['forward-events', 'auto-connect', 'gs-forward', 'gs-auto-connect']
         .forEach((id) => el(id).addEventListener('change', persist));
 
@@ -1809,7 +2267,9 @@ function wire() {
     window.lbcbot.onUpdateStatus(applyUpdateStatus);
     window.lbcbot.onLog(appendLog);
     window.lbcbot.onObsStatus((status) => {
-        setStatus('obs', status.connected);
+        // The sidebar's OBS line is the one that goes live.
+        const live = (status.connections || []).find((c) => c.live);
+        setStatus('obs', Boolean(live && live.connected));
         applyObsStatus(status);
     });
     window.lbcbot.onGreenSplitStatus(applyGreenSplitStatus);

@@ -18,6 +18,7 @@ const path = require('node:path');
 
 const sites = require('./sites');
 const accounts = require('./accounts');
+const obsConnections = require('./obsconnections');
 
 const FILE = () => path.join(app.getPath('userData'), 'settings.json');
 
@@ -32,6 +33,15 @@ const DEFAULTS = {
      * network reports, which beats the bare address, and outlive a new scan.
      */
     obsNames: {},
+    /**
+     * The OBS connections (obsconnections.js, 2026-11-26): `[{ id, url, name, reported, local, live, enabled }]`. The
+     * keys above are what one connection looked like before; they become the first one once, and stay for a downgrade.
+     * Changed only through the OBS calls below, never a renderer's settings patch: a connection's address is where its
+     * password goes.
+     */
+    obsConnections: [],
+    /** Each connection's password, encrypted, by connection id. Private: never in `settings()`. */
+    obsPasswords: {},
     autoConnectObs: true,
     forwardObsEvents: true,
     /**
@@ -67,7 +77,9 @@ const DEFAULTS = {
 };
 
 /** Keys only this module writes: a renderer's settings patch never reaches them, and `settings()` never answers them. */
-const PRIVATE = ['credential', 'obsPassword', 'greensplitToken', 'accounts', 'activeAccount'];
+const PRIVATE = ['credential', 'obsPassword', 'obsPasswords', 'greensplitToken', 'accounts', 'activeAccount'];
+/** Keys a renderer may read but not write: they change only through their own calls. */
+const LOCKED = ['obsConnections'];
 const without = (object, keys) => Object.fromEntries(Object.entries(object || {}).filter(([key]) => !keys.includes(key)));
 
 let cache = null;
@@ -80,9 +92,11 @@ function read() {
         const stripped = sites.stripEndpointSettings(JSON.parse(fs.readFileSync(FILE(), 'utf8')));
         // The single credential from before several accounts becomes the first account, still encrypted.
         const migrated = accounts.migrate(stripped.settings);
-        cache = { ...DEFAULTS, ...migrated.settings };
-        if (stripped.changed || migrated.changed) {
-            write(); // drop the retired apiUrl/siteUrl keys; move the old credential into the list
+        // The one OBS connection from before several becomes the first, with its saved password.
+        const obs = obsConnections.migrateSettings(migrated.settings);
+        cache = { ...DEFAULTS, ...obs.settings };
+        if (stripped.changed || migrated.changed || obs.changed) {
+            write(); // drop the retired apiUrl/siteUrl keys; move the old credential and OBS into their lists
         }
     } catch (error) {
         cache = { ...DEFAULTS };
@@ -105,9 +119,12 @@ function write() {
  * keychain. A write updates the memory copy at once and persists the encrypted form when the keychain answers.
  * `credentials` holds each account's, by account id.
  */
-const SECRETS = ['obsPassword', 'greensplitToken'];
-const secrets = { obsPassword: null, greensplitToken: null };
+// The OBS password from before several connections (obsPassword) moved to obsPasswords on migration: not read here.
+const SECRETS = ['greensplitToken'];
+const secrets = { greensplitToken: null };
 const credentials = new Map();
+/** Each OBS connection's password, decrypted, by connection id. */
+const obsPasswords = new Map();
 
 /**
  * Encrypt a secret for storage. Falls back to plaintext with a loud warning when the OS has no usable keychain
@@ -174,6 +191,22 @@ async function setAccountCredential(id, value) {
     }
 }
 
+/** Set (or with no value, forget) one OBS connection's password. Resolves when persisted. */
+async function setObsConnectionPassword(id, value) {
+    read();
+    obsPasswords.set(id, value || null);
+    const encrypted = await encrypt(value || null);
+    // As with the other secrets: only the newest value is written.
+    if (obsPasswords.get(id) === (value || null)) {
+        const next = { ...(cache.obsPasswords || {}) };
+        if (encrypted) next[id] = encrypted;
+        else delete next[id];
+        cache.obsPasswords = next;
+        if (!value) obsPasswords.delete(id);
+        write();
+    }
+}
+
 const signedIn = (row) => Boolean(credentials.get(row.id));
 
 module.exports = {
@@ -185,6 +218,13 @@ module.exports = {
             secrets[name] = value;
             if (shouldReEncrypt) {
                 await setSecret(name, value);
+            }
+        }
+        for (const [id, blob] of Object.entries(stored.obsPasswords || {})) {
+            const { value, shouldReEncrypt } = await decrypt(blob);
+            obsPasswords.set(id, value);
+            if (shouldReEncrypt) {
+                await setObsConnectionPassword(id, value);
             }
         }
         for (const row of stored.accounts) {
@@ -209,7 +249,7 @@ module.exports = {
         read();
         // Secrets and the accounts change only through their own setters, which encrypt: a settings patch carrying one
         // is not obeyed.
-        Object.assign(cache, sites.stripEndpointSettings(without(patch, PRIVATE)).settings);
+        Object.assign(cache, sites.stripEndpointSettings(without(patch, [...PRIVATE, ...LOCKED])).settings);
         write();
         return module.exports.settings();
     },
@@ -330,12 +370,24 @@ module.exports = {
         return { credential, active };
     },
 
-    getObsPassword() {
-        return secrets.obsPassword;
+    // ---------------------------------------------------------------- OBS connections (obsconnections.js)
+
+    obsConnections() {
+        return read().obsConnections || [];
     },
 
-    setObsPassword(value) {
-        return setSecret('obsPassword', value);
+    saveObsConnections(list) {
+        read();
+        cache.obsConnections = list;
+        write();
+    },
+
+    getObsPasswordFor(id) {
+        return obsPasswords.get(id) || null;
+    },
+
+    setObsPasswordFor(id, value) {
+        return setObsConnectionPassword(id, value);
     },
 
     getGreensplitToken() {
