@@ -394,8 +394,7 @@ class ObsBridge {
         if (!this.url && !this.connected) {
             return;
         }
-        const asked = Number(seconds);
-        const span = Math.min(Number.isFinite(asked) && asked > 0 ? asked : WATCH_DEFAULT_SECONDS, WATCH_MAX_SECONDS);
+        const span = watchSpan(seconds);
         const wasWatched = this.watched;
         this.leaseUntil = Math.max(this.leaseUntil, this.now() + span * 1000);
         if (!wasWatched) {
@@ -724,4 +723,10 @@ function frames(skipped, total) {
     return { skipped: Math.max(0, Math.trunc(Number(skipped) || 0)), total: Math.max(0, Math.trunc(Number(total) || 0)) };
 }
 
-module.exports = { ObsBridge, retryDelay, STREAM_STATES, STATS_EVERY_MS };
+/** A dashboard's watch, as watchStats takes it: `seconds` asked, the default when none, capped. */
+function watchSpan(seconds) {
+    const asked = Number(seconds);
+    return Math.min(Number.isFinite(asked) && asked > 0 ? asked : WATCH_DEFAULT_SECONDS, WATCH_MAX_SECONDS);
+}
+
+module.exports = { ObsBridge, retryDelay, watchSpan, STREAM_STATES, STATS_EVERY_MS };

@@ -320,15 +320,28 @@ test('a watch that named no OBS follows the first on a move or remove, for what 
     assert.deepEqual(bridges[0].watches, [30]);
 });
 
-test('following the first never stops a watch a picker asked for by obsId', () => {
-    const { manager, bridges } = makeManager([{ ...here }, { ...there }]);
+test('a shorter renewal never shortens what follows the first', () => {
+    const { manager, bridges, clock } = makeManager([{ ...here }, { ...there }]);
+    manager.execute(command({ type: 'WATCH_STATS', seconds: 120 }));
+    clock.t += 5_000;
+    manager.execute(command({ type: 'WATCH_STATS', seconds: 10 }));
+    clock.t += 15_000;
+    manager.move(there.id, -1);
+    assert.deepEqual(bridges[1].watches, [100]);
+});
+
+test('following the first keeps a picker\'s own watch on the old first, cut back to that watch', () => {
+    const { manager, bridges, clock } = makeManager([{ ...here }, { ...there }]);
     manager.execute(command({ type: 'WATCH_STATS', seconds: 60 }));
-    manager.execute(command({ type: 'WATCH_STATS', seconds: 60, obsId: here.id }));
+    manager.execute(command({ type: 'WATCH_STATS', seconds: 30, obsId: here.id }));
+    clock.t += 20_000;
     manager.move(here.id, 1);
-    assert.equal(bridges[0].stops, 0);
-    assert.deepEqual(bridges[1].watches, [60]);
+    assert.equal(bridges[0].stops, 1); // cut back to the picker's watch, not left on the longer one
+    assert.deepEqual(bridges[0].watches, [10]);
+    assert.deepEqual(bridges[1].watches, [40]);
     manager.move(there.id, 1); // and back again: the streaming PC had no watch of its own, so it stops
-    assert.deepEqual(bridges[0].watches, [60]);
+    assert.equal(bridges[1].stops, 1);
+    assert.deepEqual(bridges[0].watches, [10, 40]);
 });
 
 test('with no OBS set up, WATCH_STATS is silent and nothing is logged for it', () => {

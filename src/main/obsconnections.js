@@ -19,6 +19,7 @@
  */
 
 const crypto = require('node:crypto');
+const { watchSpan } = require('./obs');
 
 const ID_PATTERN = /^obs_[0-9a-f]{8}$/;
 const DEFAULT_PORT = 4455;
@@ -349,13 +350,23 @@ class ObsConnections {
     /** The first was `prevId` and may not be now: a watch that named no OBS moves to the new first, for what it had left. */
     followFirst(prevId) {
         const next = this.list[0];
-        if (!next || next.id === prevId || this.untaggedWatch.id !== prevId) return;
+        if (this.untaggedWatch.id !== prevId) return;
+        if (!next) {
+            this.untaggedWatch = { id: null, until: 0 };
+            return;
+        }
+        if (next.id === prevId) return;
         const now = this.now();
         const left = Math.ceil((this.untaggedWatch.until - now) / 1000);
         this.untaggedWatch = { id: next.id, until: this.untaggedWatch.until };
         if (left <= 0) return;
         const prev = this.bridges.get(prevId);
-        if (prev && prev.stopStats && !((this.watchedById.get(prevId) || 0) > now)) prev.stopStats();
+        if (prev && prev.stopStats) {
+            // The old first's lease is the later of both watches: cut it back to what a picker asked for by obsId.
+            const named = Math.ceil(((this.watchedById.get(prevId) || 0) - now) / 1000);
+            prev.stopStats();
+            if (named > 0 && prev.watchStats) prev.watchStats(named);
+        }
         const bridge = this.bridges.get(next.id);
         if (bridge && bridge.watchStats) bridge.watchStats(left);
     }
@@ -435,10 +446,10 @@ class ObsConnections {
             return undefined;
         }
         if (action && action.type === 'WATCH_STATS') {
-            const asked = Number(action.seconds);
-            const until = this.now() + Math.min(Number.isFinite(asked) && asked > 0 ? asked : 60, 120) * 1000;
+            const until = this.now() + watchSpan(action.seconds) * 1000;
+            const first = this.list[0].id;
             if (obsId) this.watchedById.set(obsId, Math.max(this.watchedById.get(obsId) || 0, until));
-            else this.untaggedWatch = { id: this.list[0].id, until };
+            else this.untaggedWatch = { id: first, until: this.untaggedWatch.id === first ? Math.max(this.untaggedWatch.until, until) : until };
         }
         return bridge.execute(command);
     }
