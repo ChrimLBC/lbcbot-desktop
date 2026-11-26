@@ -1096,7 +1096,7 @@ function renderTemplateList() {
         const text = tplEl('span', 'plan__rowtext');
         text.appendChild(tplEl('span', 'plan__name', shown.name || 'Untitled'));
         const st = applyStates.get(id);
-        if (st && st.state === 'error') {
+        if (st && st.message) {
             text.appendChild(tplEl('span', 'plan__sub is-error', st.message));
         } else {
             text.appendChild(tplEl('span', 'plan__sub', summaryOf(shown) || 'Keeps everything as it is'));
@@ -1186,6 +1186,8 @@ function fillTemplateForm(template) {
     youtubeTags.render();
     updateCounters();
     drawApply(el('template-apply'), draft.streamTemplateId, true);
+    const st = applyStates.get(draft.streamTemplateId);
+    setTemplateStatus(st && st.message ? st.message : '');
 }
 
 function selectTemplate(id) {
@@ -1414,7 +1416,7 @@ function tagBox({ boxId, field, clean, limitReached }) {
     const list = () => csvToList(draft && draft[field]);
     const save = (tags) => editDraft({ [field]: tags.join(', ') });
 
-    function add(raw) {
+    function add(raw, refocus = true) {
         const tags = list();
         raw.split(',').map(clean).filter(Boolean).forEach((tag) => {
             if (limitReached(tags, tag)) return;
@@ -1423,7 +1425,7 @@ function tagBox({ boxId, field, clean, limitReached }) {
         save(tags);
         input.value = '';
         render();
-        input.focus();
+        if (refocus) input.focus();
     }
 
     function render() {
@@ -1466,7 +1468,7 @@ function tagBox({ boxId, field, clean, limitReached }) {
         }
     });
     // A tag typed and left without a comma still counts.
-    input.addEventListener('blur', () => { if (input.value.trim()) add(input.value); });
+    input.addEventListener('blur', () => { if (input.value.trim()) add(input.value, false); });
     box.addEventListener('mousedown', (event) => {
         if (event.target === box) {
             event.preventDefault();
@@ -1517,14 +1519,14 @@ async function applyTemplate(id) {
     }
     applyStates.set(id, next);
     redrawApply(id);
-    if (next.state === 'ok') {
-        setTimeout(() => {
-            if ((applyStates.get(id) || {}).state === 'ok') {
-                applyStates.delete(id);
-                redrawApply(id);
-            }
-        }, FLASH_MS);
-    }
+    // The tick or cross flashes, then the button is ready again; a failure's reason stays under the name until the
+    // next Apply, so it can still be read after looking away.
+    setTimeout(() => {
+        if (applyStates.get(id) !== next) return;
+        if (next.state === 'ok') applyStates.delete(id);
+        else applyStates.set(id, { state: 'idle', message: next.message });
+        redrawApply(id);
+    }, next.state === 'ok' ? FLASH_MS : FLASH_MS * 2);
 }
 
 function redrawApply(id) {
@@ -1532,7 +1534,7 @@ function redrawApply(id) {
     if (draft && draft.streamTemplateId === id) {
         drawApply(el('template-apply'), id, true);
         const st = applyStates.get(id);
-        setTemplateStatus(st && st.state === 'error' ? st.message : '');
+        setTemplateStatus(st && st.message ? st.message : '');
     }
 }
 
