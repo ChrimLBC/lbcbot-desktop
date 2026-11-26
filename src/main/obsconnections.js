@@ -115,6 +115,11 @@ function withOneLive(list, liveId) {
     return list.map((c) => (Boolean(c.live) === (c.id === id) ? c : { ...c, live: c.id === id }));
 }
 
+/** Whole seconds left on a bridge's stats watch. */
+function leaseLeft(bridge) {
+    return Math.max(0, Math.ceil((bridge.leaseUntil - bridge.now()) / 1000));
+}
+
 class ObsConnections {
     /**
      * `store`: `{ list(), save(list), password(id), setPassword(id, value), deletePassword(id), settings() }`.
@@ -238,7 +243,7 @@ class ObsConnections {
     moveStatsLease(prev) {
         const next = this.live;
         if (this.statsAll || !prev || prev === next || !prev.watched) return;
-        const left = Math.ceil((prev.leaseUntil - prev.now()) / 1000);
+        const left = leaseLeft(prev);
         prev.stopStats();
         if (next && left > 0) next.watchStats(left);
     }
@@ -304,6 +309,11 @@ class ObsConnections {
         const live = takesLive(this.list, conn);
         const prev = this.live;
         this.bridges.set(conn.id, trial);
+        if (this.statsAll) {
+            // The API asks every connection: one added mid-watch joins in now, not at the next renewal.
+            const watched = [...this.bridges.values()].find((b) => b !== trial && b.watched);
+            if (watched) trial.watchStats(leaseLeft(watched));
+        }
         this.list = [...this.list.map((c) => (live ? { ...c, live: false } : c)), { ...conn, live }];
         this.save();
         this.moveStatsLease(prev);
@@ -321,6 +331,7 @@ class ObsConnections {
         this.list = this.list.filter((c) => c.id !== id);
         this.save();
         if (conn.live) this.moveStatsLease(bridge);
+        if (bridge && bridge.stopStats) bridge.stopStats();
         await this.store.deletePassword(id);
         if (bridge) await bridge.disconnect().catch(() => {});
         this.onLog(`Removed ${displayName(conn)}.`);
@@ -419,9 +430,9 @@ class ObsConnections {
             this.statsAll = true;
             return Promise.all([...this.bridges.values()].map((b) => b.execute(command)));
         }
-        // An API that names the OBS it wants stats from keeps each one's samples apart.
-        if (obsId && action && action.type === 'WATCH_STATS') this.statsAll = true;
         const bridge = obsId ? this.bridges.get(obsId) : this.live;
+        // An API that names the OBS it wants stats from keeps each one's samples apart.
+        if (bridge && obsId && action && action.type === 'WATCH_STATS') this.statsAll = true;
         if (!bridge) {
             // No OBS set up here (the app on a second PC) stays silent for WATCH_STATS, as before.
             if (obsId || !(action && action.type === 'WATCH_STATS')) {

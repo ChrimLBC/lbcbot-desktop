@@ -245,7 +245,7 @@ function streamLine(conn) {
         if (stream.startedAt != null) pill.dataset.started = String(stream.startedAt);
     }
     if (stop) hint = `Ending in ${stop.left} s`;
-    if (obs.rowMsg.get(conn.id)) hint = obs.rowMsg.get(conn.id);
+    if (obs.rowMsg.get(conn.id)) hint = obs.rowMsg.get(conn.id).text;
     pill.className = `pill ${tone}`;
     pill.textContent = text;
     const note = document.createElement('span');
@@ -471,8 +471,29 @@ function focusKey(key, select = false) {
     }
 }
 
+/** A text field's caret and selection, to put back on the field that replaces it after a redraw. */
+function caretOf(node) {
+    if (!node || !node.dataset || !node.dataset.focusKey) return null;
+    try {
+        return { key: node.dataset.focusKey, start: node.selectionStart, end: node.selectionEnd, dir: node.selectionDirection };
+    } catch (error) {
+        return null; // not a text field
+    }
+}
+
+function restoreCaret(caret) {
+    const node = document.activeElement;
+    if (!caret || caret.start == null || !node || !node.dataset || node.dataset.focusKey !== caret.key) return;
+    try {
+        node.setSelectionRange(caret.start, caret.end, caret.dir || 'none');
+    } catch (error) {
+        // not a text field
+    }
+}
+
 function renderObs() {
     const active = document.activeElement && document.activeElement.dataset ? document.activeElement.dataset.focusKey : null;
+    const caret = caretOf(document.activeElement);
     const list = el('obs-list');
     obs.redrawing = true;
     try {
@@ -486,7 +507,10 @@ function renderObs() {
     if (active) focusKey(active);
     if (obs.renaming) {
         focusKey(`rename:${obs.renaming}`, obs.renameSelect);
+        if (!obs.renameSelect) restoreCaret(caret);
         obs.renameSelect = false;
+    } else if (active) {
+        restoreCaret(caret);
     }
     tickObs();
 }
@@ -510,11 +534,14 @@ function applyObsStatus(status) {
     if (!status || !Array.isArray(status.connections)) return;
     const first = !obs.known;
     obs.known = true;
-    // A Start's error goes once that OBS's connection or stream changes (started from OBS itself, or dropped).
+    // A Start or Stop's error stays through the in-between pushes (starting, then back to off) and goes once that OBS
+    // settles somewhere else: started or stopped from OBS itself, or dropped.
     for (const next of status.connections) {
-        const prev = obsConn(next.id);
-        const was = prev && `${prev.state}/${prev.stream && prev.stream.state}`;
-        if (was && was !== `${next.state}/${next.stream && next.stream.state}`) obs.rowMsg.delete(next.id);
+        const msg = obs.rowMsg.get(next.id);
+        const stream = next.stream && next.stream.state;
+        if (msg && (next.state !== 'connected' || ((stream === 'live' || stream === 'off') && stream !== msg.from))) {
+            obs.rowMsg.delete(next.id);
+        }
     }
     obs.conns = status.connections;
     // A stop or a remove waiting on a connection that has gone (or dropped) has nothing to act on.
@@ -555,7 +582,7 @@ async function setObsStreaming(id, on) {
     renderObs();
     try {
         const result = await window.lbcbot.setStreaming(id, on);
-        if (result && !result.ok) obs.rowMsg.set(id, result.error);
+        if (result && !result.ok) obs.rowMsg.set(id, { text: result.error, from: on ? 'off' : 'live' });
     } finally {
         obs.busy.delete(id);
         renderObs();
@@ -832,7 +859,7 @@ async function addFoundObs(row, password) {
     }
     obs.foundMsg = { host: row.host, text: (result && result.error) || 'Could not connect.' };
     renderObsPanel();
-    if (obs.expanded === row.host) focusKey(`foundpw:${row.host}`, true);
+    focusKey(obs.expanded === row.host ? `foundpw:${row.host}` : `found:${row.host}`, obs.expanded === row.host);
 }
 
 async function scanObs() {

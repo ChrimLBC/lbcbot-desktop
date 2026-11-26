@@ -1027,11 +1027,18 @@ function buildServices() {
             deletePassword: (id) => store.setObsPasswordFor(id, null),
             settings: () => store.settings(),
         },
-        makeBridge: (conn, hooks) => new ObsBridge(hooks),
+        makeBridge: (conn, hooks) => {
+            const bridge = new ObsBridge(hooks);
+            // Set up from the start, so one never connected yet (disconnected by hand) still answers a stats watch
+            // with "not connected" instead of staying silent like an app with no OBS at all.
+            bridge.url = conn.url;
+            return bridge;
+        },
         onLog: log,
         onStatus: (status) => send('obs-status', status),
         onObsEvent: async (event) => {
-            // OBS -> LBCBot, from every connected OBS, tagged with which one (obsId, obsName). Fire and forget: a
+            // OBS -> LBCBot, from the OBS that goes live only until the API tells PCs apart (ObsConnections), tagged
+            // with which one (obsId, obsName). Fire and forget: a
             // failed post must not stall the OBS event stream, and the user will see it in the log.
             const result = await lbcbot.postObsEvent(event);
             if (!result.ok) {
