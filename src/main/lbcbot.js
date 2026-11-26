@@ -536,7 +536,14 @@ class LbcBot {
      * watches. The API rebuilds it field by field and passes it to that dashboard; it keeps nothing.
      */
     postObsStats(payload, { timeoutMs = 5000 } = {}) {
-        return this.request('POST', '/users/obs/stats', payload, { signal: AbortSignal.timeout(timeoutMs) });
+        // The whole call is bounded, the token exchange too, not just the fetch: a hung post would stall the sampler.
+        const signal = AbortSignal.timeout(timeoutMs);
+        let timer;
+        const expired = new Promise((resolve) => {
+            timer = setTimeout(() => resolve({ ok: false, status: 0, error: 'timeout' }), timeoutMs);
+        });
+        return Promise.race([this.request('POST', '/users/obs/stats', payload, { signal }), expired])
+            .finally(() => clearTimeout(timer));
     }
 
     /** One GreenSplit trigger — the body is built by greensplit.js's mapping, one trigger type per post. */

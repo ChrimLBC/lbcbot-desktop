@@ -446,7 +446,7 @@ test('a change while a sample is in flight is sent as soon as that one finishes'
     const first = fire();
     await new Promise((r) => setImmediate(r));
     bridge.applyStreamState('OBS_WEBSOCKET_OUTPUT_STARTED');
-    await timers[timers.length - 1].fn(); // the change's tick finds a sample in flight
+    await timers.filter((t) => t.ms !== 3000).at(-1).fn(); // the change's tick finds a sample in flight
     tick(100);
     release();
     await first;
@@ -467,4 +467,43 @@ test('switching OBS reads the frame rate of the new one', async () => {
     tick(2000);
     await fire();
     assert.equal(posts[posts.length - 1].fps, 30);
+});
+
+test('a desktop whose OBS refused the password still answers WATCH_STATS, with connected false', async () => {
+    const client = new FakeClient([badPassword]);
+    const posts = [];
+    const { bridge, timers } = makeBridge(client, { onStats: (p) => posts.push(p) });
+    await bridge.connect();
+    assert.equal(bridge.passwordProblem, true);
+    await bridge.execute(watch(60));
+    await timers[timers.length - 1].fn();
+    assert.equal(posts.length, 1);
+    assert.equal(posts[0].connected, false);
+    assert.equal(posts[0].host, '10.0.0.88');
+});
+
+test('a stalled OBS request counts as failed, so the sample still goes out', async () => {
+    const { bridge, client, posts, timers } = await statsBridge();
+    await bridge.execute(watch(60));
+    const call = client.call.bind(client);
+    client.call = (name) => (name === 'GetStats' ? new Promise(() => {}) : call(name));
+    const tickTimer = timers[timers.length - 1];
+    const running = tickTimer.fn();
+    await new Promise((resolve) => setImmediate(resolve));
+    const stall = timers.find((t) => t.ms === 3000);
+    assert.ok(stall, 'a 3 s limit is set on each OBS request');
+    stall.fn();
+    await running;
+    assert.equal(posts.length, 1);
+    assert.equal(posts[0].cpu, null);
+    assert.equal(posts[0].stream.state, 'live');
+});
+
+test('a failed GetStreamStatus while off sends uptime 0, not null', async () => {
+    const { bridge, client, posts, fire } = await statsBridge({ stream: { outputActive: false } });
+    bridge.stream = { state: 'off', startedAt: null };
+    client.responses.GetStreamStatus = new Error('busy');
+    await bridge.execute(watch(60));
+    await fire();
+    assert.deepEqual(posts[0].stream, { state: 'off', uptimeMs: 0 });
 });

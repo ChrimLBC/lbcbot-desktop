@@ -35,6 +35,8 @@ const WATCH_DEFAULT_SECONDS = 60;
 const STATS_GAP_MS = 1200;
 /** A stats post that hangs gives up after this, so it can't stall the sampler. */
 const STATS_POST_TIMEOUT_MS = 5000;
+/** An OBS request for a sample that takes longer than this counts as failed, so a stalled OBS can't stall the sampler. */
+const STATS_CALL_TIMEOUT_MS = 3000;
 
 /** The wait before retry number `attempt` (0-based): 1 s, 2 s, 4 s … capped at 30 s. */
 function retryDelay(attempt, min = RETRY_MIN_MS, max = RETRY_MAX_MS) {
@@ -386,8 +388,9 @@ class ObsBridge {
      */
     watchStats(seconds) {
         // A desktop with no OBS set up stays silent: with the app on two PCs, only the one driving OBS answers, and
-        // the dashboard never sees the other's "not connected" in between.
-        if (!this.wanted && !this.connected) {
+        // the dashboard never sees the other's "not connected" in between. One with an OBS set up answers even while
+        // that OBS is down, retrying, refusing the password or disconnected by hand: the widget says so.
+        if (!this.url && !this.connected) {
             return;
         }
         const asked = Number(seconds);
@@ -473,9 +476,9 @@ class ObsBridge {
             return base;
         }
         const [stats, stream, video] = await Promise.all([
-            this.obs.call('GetStats').catch(() => null),
-            this.obs.call('GetStreamStatus').catch(() => null),
-            this.videoFps == null ? this.obs.call('GetVideoSettings').catch(() => null) : null,
+            this.callWithin('GetStats'),
+            this.callWithin('GetStreamStatus'),
+            this.videoFps == null ? this.callWithin('GetVideoSettings') : null,
         ]);
         if (video && Number(video.fpsDenominator) > 0) {
             this.videoFps = Number(video.fpsNumerator) / Number(video.fpsDenominator);
@@ -485,7 +488,7 @@ class ObsBridge {
         if (!stream) {
             // GetStreamStatus failed this time (OBS busy, a hiccup): say nothing about the output rather than "off",
             // and keep the bitrate baseline for the next sample.
-            payload.stream = { state: this.stream.state, uptimeMs: null };
+            payload.stream = { state: this.stream.state, uptimeMs: this.stream.state === 'off' ? 0 : null };
             payload.bitrateKbps = null;
         } else {
             const active = Boolean(stream.outputActive);
@@ -507,6 +510,14 @@ class ObsBridge {
             render: stats ? frames(stats.renderSkippedFrames, stats.renderTotalFrames) : null,
         };
         return payload;
+    }
+
+    /** One OBS request for a sample: null if it fails or takes over STATS_CALL_TIMEOUT_MS (a stalled OBS). */
+    callWithin(request) {
+        return new Promise((resolve) => {
+            const timer = this.setTimer(() => resolve(null), STATS_CALL_TIMEOUT_MS);
+            this.obs.call(request).then(resolve, () => resolve(null)).finally(() => this.clearTimer(timer));
+        });
     }
 
     /** kbit/s from outputBytes now and at the last sample (bytes x 8 per ms is kbit per s). */
