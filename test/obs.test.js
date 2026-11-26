@@ -32,7 +32,7 @@ class FakeClient extends EventEmitter {
     }
 }
 
-function makeBridge(client, { password = 'pw', settings = {} } = {}) {
+function makeBridge(client, { password = 'pw', settings = {}, onStats, name } = {}) {
     const timers = [];
     const statuses = [];
     let clock = 1_000_000;
@@ -44,6 +44,8 @@ function makeBridge(client, { password = 'pw', settings = {} } = {}) {
         clearTimer: () => {},
         now: () => clock,
         onStatus: (s) => statuses.push(s),
+        onStats,
+        name,
     });
     return { bridge, timers, statuses, tick: (ms) => { clock += ms; } };
 }
@@ -236,4 +238,159 @@ test('scanTargets skips WSL, Hyper-V and other virtual adapters', () => {
     });
     assert.equal(hosts.size, 254);
     assert.ok(!hosts.has('172.27.224.1'));
+});
+
+// ------------------------------------------------------------------ live stats
+
+const watch = (seconds) => ({ target: 'obs', action: JSON.stringify({ type: 'WATCH_STATS', seconds }) });
+
+/** A connected bridge whose OBS answers GetStats/GetStreamStatus with `stream` and `stats`, posting into `posts`. */
+async function statsBridge({ stream = {}, stats = {}, connect = true } = {}) {
+    const client = new FakeClient(['ok'], {
+        GetStreamStatus: { outputActive: true, outputDuration: 60000, outputBytes: 0, outputCongestion: 0.0123,
+            outputSkippedFrames: 3, outputTotalFrames: 3600, ...stream },
+        GetStats: { cpuUsage: 12.345, memoryUsage: 812.44, availableDiskSpace: 402113.6, activeFps: 59.9401,
+            outputSkippedFrames: 1, outputTotalFrames: 3600, renderSkippedFrames: 2, renderTotalFrames: 3700, ...stats },
+        GetVideoSettings: { fpsNumerator: 60000, fpsDenominator: 1001 },
+    });
+    const posts = [];
+    const made = makeBridge(client, { onStats: (p) => posts.push(p), name: (host) => (host === '10.0.0.88' ? 'Streaming PC' : '') });
+    if (connect) await made.bridge.connect();
+    /** Run the one live stats timer (an older one is stale and does nothing). */
+    const fire = async () => {
+        const t = made.timers[made.timers.length - 1];
+        await t.fn();
+        return t.ms;
+    };
+    return { ...made, client, posts, fire };
+}
+
+test('WATCH_STATS posts a sample at once, then every 2 s until the lease ends', async () => {
+    const { bridge, posts, fire, tick, timers } = await statsBridge();
+    await bridge.execute(watch(60));
+    assert.equal(timers[timers.length - 1].ms, 0);
+    await fire();
+    assert.equal(posts.length, 1);
+    for (let i = 0; i < 29; i += 1) {
+        assert.equal(timers[timers.length - 1].ms, 2000);
+        tick(2000);
+        await fire();
+    }
+    assert.equal(posts.length, 30); // 0 s … 58 s
+    tick(2000); // 60 s: the lease is over
+    const before = timers.length;
+    await fire();
+    assert.equal(posts.length, 30);
+    assert.equal(timers.length, before, 'nothing more is scheduled');
+    assert.equal(bridge.watched, false);
+});
+
+test('a renewal extends the lease without a second stream of posts, capped at 2 minutes', async () => {
+    const { bridge, fire, tick, timers } = await statsBridge();
+    await bridge.execute(watch(60));
+    await fire();
+    tick(45000);
+    const scheduled = timers.length;
+    await bridge.execute(watch(60));
+    assert.equal(timers.length, scheduled, 'a renewal schedules nothing new');
+    assert.equal(bridge.leaseUntil, 1_000_000 + 45000 + 60000);
+    await bridge.execute(watch(9999));
+    assert.equal(bridge.leaseUntil, 1_000_000 + 45000 + 120000);
+    await bridge.execute(watch('nonsense'));
+    assert.equal(bridge.leaseUntil, 1_000_000 + 45000 + 120000, 'never shortened');
+});
+
+test('a sample has the API\'s shape, each drop counter from its own source', async () => {
+    const { bridge, posts, fire } = await statsBridge();
+    bridge.stream = { state: 'live', startedAt: 1 };
+    await bridge.execute(watch(60));
+    await fire();
+    assert.deepEqual(posts[0], {
+        connected: true, host: '10.0.0.88', name: 'Streaming PC', sampledAt: 1_000_000,
+        stream: { state: 'live', uptimeMs: 60000 },
+        bitrateKbps: null, // one sample: no rate yet
+        fps: 59.94, activeFps: 59.94, cpu: 12.3, memoryMb: 812.4, diskFreeMb: 402114, congestion: 0.012,
+        dropped: { network: { skipped: 3, total: 3600 }, encoder: { skipped: 1, total: 3600 }, render: { skipped: 2, total: 3700 } },
+    });
+});
+
+test('bitrate is the change in outputBytes over the time between samples, and restarts when the count goes down', async () => {
+    const { bridge, client, posts, fire, tick } = await statsBridge();
+    await bridge.execute(watch(60));
+    client.responses.GetStreamStatus.outputBytes = 1_000_000;
+    await fire();
+    tick(2000);
+    client.responses.GetStreamStatus.outputBytes = 2_500_000; // 1.5 MB in 2 s = 6000 kbit/s
+    await fire();
+    tick(2000);
+    client.responses.GetStreamStatus.outputBytes = 100; // a new stream
+    await fire();
+    tick(2000);
+    client.responses.GetStreamStatus.outputBytes = 750_100; // 0.75 MB in 2 s
+    await fire();
+    tick(2000);
+    client.responses.GetStreamStatus.outputActive = false;
+    await fire();
+    assert.deepEqual(posts.map((p) => p.bitrateKbps), [null, 6000, null, 3000, 0]);
+    assert.deepEqual(posts[4].stream, { state: 'off', uptimeMs: 0 });
+});
+
+test('while watched, OBS dropping posts connected: false at once, and reconnecting posts again', async () => {
+    const { bridge, client, posts, fire, tick, timers } = await statsBridge();
+    await bridge.execute(watch(60));
+    await fire();
+    tick(1500);
+    client.emit('ConnectionClosed'); // also schedules the reconnect, the timer before the stats one
+    const statsTimer = timers.findLast((t) => t.ms === 0);
+    await statsTimer.fn();
+    assert.deepEqual(posts[1], { connected: false, host: '10.0.0.88', name: 'Streaming PC', sampledAt: 1_001_500 });
+    tick(1000);
+    await bridge.connect();
+    await fire();
+    assert.equal(posts.length, 3);
+    assert.equal(posts[2].connected, true);
+});
+
+test('a state change within a second of the last post waits for the API\'s floor', async () => {
+    const { bridge, posts, fire, tick, timers } = await statsBridge();
+    await bridge.execute(watch(60));
+    await fire();
+    tick(300);
+    bridge.applyStreamState('OBS_WEBSOCKET_OUTPUT_STOPPING');
+    assert.equal(timers[timers.length - 1].ms, 700);
+    tick(700);
+    await fire();
+    assert.equal(posts.length, 2);
+    assert.equal(posts[1].stream.state, 'stopping');
+    assert.equal(timers[timers.length - 1].ms, 2000, 'then back to every 2 s');
+    tick(10);
+    bridge.applyStreamState('OBS_WEBSOCKET_OUTPUT_STOPPING');
+    assert.equal(timers[timers.length - 1].ms, 2000, 'the same state again is not a change');
+});
+
+test('a watch with OBS not connected posts connected: false and nothing else', async () => {
+    const { bridge, posts, fire, client } = await statsBridge({ connect: false });
+    bridge.url = 'ws://10.0.0.88:4455';
+    await bridge.execute(watch(60));
+    await fire();
+    assert.deepEqual(posts, [{ connected: false, host: '10.0.0.88', name: 'Streaming PC', sampledAt: 1_000_000 }]);
+    assert.deepEqual(client.calls, []);
+});
+
+test('no watch, no stats: state changes and connects post nothing', async () => {
+    const { bridge, posts, timers } = await statsBridge();
+    const scheduled = timers.length;
+    bridge.applyStreamState('OBS_WEBSOCKET_OUTPUT_STARTED');
+    assert.equal(timers.length, scheduled);
+    assert.equal(posts.length, 0);
+});
+
+test('WATCH_STATS is never logged and never reaches OBS as an action', async () => {
+    const logs = [];
+    const { bridge, client } = await statsBridge();
+    bridge.onLog = (l) => logs.push(l);
+    const before = client.calls.length;
+    await bridge.execute(watch(60));
+    assert.deepEqual(logs, []);
+    assert.equal(client.calls.length, before);
 });

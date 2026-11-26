@@ -531,6 +531,14 @@ class LbcBot {
         return this.request('POST', '/users/obs/event', payload);
     }
 
+    /**
+     * One live stats sample of the OBS this app drives (obs.js sampleStats), sent every 2 s only while a dashboard
+     * watches. The API rebuilds it field by field and passes it to that dashboard; it keeps nothing.
+     */
+    postObsStats(payload) {
+        return this.request('POST', '/users/obs/stats', payload);
+    }
+
     /** One GreenSplit trigger — the body is built by greensplit.js's mapping, one trigger type per post. */
     postGreenSplitEvent(payload, { signal } = {}) {
         return this.request('POST', '/users/greensplit/event', payload, { signal });

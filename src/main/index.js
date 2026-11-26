@@ -1027,6 +1027,18 @@ function buildServices() {
                 log(`Could not forward ${event.eventType}: ${result.error || result.status}`);
             }
         },
+        // Live stats for a dashboard that is watching. Not logged on failure: one every 2 s would bury the log, and
+        // the dashboard already says when none arrive.
+        onStats: async (payload) => {
+            if (store.hasCredential()) await lbcbot.postObsStats(payload);
+        },
+        // What the dashboard calls this OBS, as the app's list does: the user's name for the PC, else "This PC", else
+        // the name it reports.
+        name: () => {
+            const s = store.settings();
+            const host = (() => { try { return new URL(s.obsUrl).hostname; } catch (e) { return ''; } })();
+            return (s.obsNames && s.obsNames[host]) || (s.obsLocal ? 'This PC' : s.obsName) || '';
+        },
     });
 
     greensplit = new GreenSplitBridge({
