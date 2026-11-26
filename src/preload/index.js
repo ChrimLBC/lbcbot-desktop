@@ -21,6 +21,10 @@ contextBridge.exposeInMainWorld('lbcbot', {
 
     connectObs: () => ipcRenderer.invoke('connect-obs'),
     disconnectObs: () => ipcRenderer.invoke('disconnect-obs'),
+    // OBS on another PC: search the LAN, pick one from the results by address, and start or stop its stream.
+    findObs: () => ipcRenderer.invoke('find-obs'),
+    useObs: (host) => ipcRenderer.invoke('use-obs', host),
+    setStreaming: (on) => ipcRenderer.invoke('set-streaming', on),
 
     // GreenSplit. The pasted Connection URL goes one way: its token is kept in the main process and never sent back.
     connectGreenSplit: (connectionUrl) => ipcRenderer.invoke('connect-greensplit', connectionUrl),

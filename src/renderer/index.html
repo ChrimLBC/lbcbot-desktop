@@ -121,11 +121,28 @@
                 </p>
             </section>
 
+            <!--
+              OBS, on this PC or another one on the network (2026-11-26: with NDI the OBS that goes live is often on a
+              second PC). The hint line doubles as the error line, so a problem shows where you are looking and
+              nothing below moves. The stream row shows only while connected: Start and Stop can't work otherwise.
+            -->
             <section class="card">
-                <div class="card__head"><h3>OBS</h3></div>
-                <p class="hint">
-                    In OBS, open Tools → WebSocket Server Settings, turn it on, and copy the password here.
-                </p>
+                <div class="card__head">
+                    <h3>OBS</h3>
+                    <span class="conn">
+                        <span class="dot dot--off" id="obs-conn-dot"></span>
+                        <span id="obs-conn-text">Not connected</span>
+                    </span>
+                </div>
+                <p class="hint" id="obs-hint">In OBS, open Tools → WebSocket Server Settings, turn it on, and copy the password here.</p>
+                <div class="row">
+                    <label>OBS on</label>
+                    <span id="obs-where" class="obs-where">This PC</span>
+                    <button type="button" id="obs-find" class="icon-btn" title="Find OBS on my network"
+                            aria-label="Find OBS on my network"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></button>
+                </div>
+                <!-- The scan's results: a click connects to that PC. Drawn by renderer.js (renderObsFound). -->
+                <ul id="obs-found" class="list obs-found" aria-label="OBS on this network" hidden></ul>
                 <div class="row">
                     <label for="obs-password">Password</label>
                     <input id="obs-password" type="password" placeholder="from OBS → Tools → WebSocket Server Settings" />
@@ -133,6 +150,15 @@
                 <div class="row row--actions">
                     <button id="obs-connect" class="primary">Connect</button>
                     <button id="obs-disconnect">Disconnect</button>
+                </div>
+                <div id="obs-stream" class="obs-stream" hidden>
+                    <span id="obs-live" class="pill pill--off">Not live</span>
+                    <span id="obs-stream-note" class="obs-stream__note"></span>
+                    <button type="button" id="obs-start" class="icon-btn obs-stream__go" title="Start streaming"
+                            aria-label="Start streaming"><svg viewBox="0 0 24 24" fill="currentColor" stroke="none" aria-hidden="true"><polygon points="7 4 20 12 7 20 7 4"/></svg></button>
+                    <button type="button" id="obs-stop" class="icon-btn icon-btn--danger" title="Stop streaming"
+                            aria-label="Stop streaming" hidden><svg viewBox="0 0 24 24" fill="currentColor" stroke="none" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1.5"/></svg></button>
+                    <button type="button" id="obs-undo" hidden>Undo</button>
                 </div>
             </section>
 

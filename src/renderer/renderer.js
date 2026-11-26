@@ -138,6 +138,233 @@ function applyUpdateStatus(status) {
 
 /* ------------------------------------------------------------------ GreenSplit */
 
+const OBS_HINT = 'In OBS, open Tools → WebSocket Server Settings, turn it on, and copy the password here.';
+const OBS_STATE_TEXT = {
+    connecting: 'Connecting…',
+    retrying: 'Waiting for OBS…',
+    'bad-password': 'Wrong password',
+    'needs-password': 'Needs password',
+    off: 'Not connected',
+};
+const LOCK_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>';
+/** Seconds of Undo before a Stop is sent: ending a stream by a stray click is the one mistake that can't be taken back. */
+const STOP_UNDO_SECONDS = 5;
+
+let obsStatus = null;
+let obsSettings = {};
+let obsFound = null; // the last scan's rows, or null while none has run
+let obsSearching = false;
+let obsStop = null; // { left, timer } while a Stop waits out its Undo
+let obsBusy = false; // a Start or Stop is on its way to OBS
+let obsTicker = null;
+
+/** The card's hint line doubles as its error line, so an error shows where you're looking and nothing shifts. */
+function setObsHint(error) {
+    const hint = el('obs-hint');
+    hint.textContent = error || OBS_HINT;
+    hint.className = `hint${error ? ' hint--bad' : ''}`;
+}
+
+function obsPlace() {
+    if (obsSettings.obsLocal !== false) return { name: 'This PC', host: '' };
+    let host = '';
+    try { host = new URL(obsSettings.obsUrl).hostname; } catch (error) { host = obsSettings.obsUrl || ''; }
+    return { name: obsSettings.obsName || host, host: obsSettings.obsName ? host : '' };
+}
+
+function renderObsWhere() {
+    const { name, host } = obsPlace();
+    const node = el('obs-where');
+    node.textContent = name;
+    if (host) {
+        const small = document.createElement('small');
+        small.textContent = host;
+        node.appendChild(small);
+    }
+}
+
+function formatUptime(ms) {
+    const total = Math.max(0, Math.floor(ms / 1000));
+    const h = Math.floor(total / 3600);
+    const m = Math.floor((total % 3600) / 60);
+    const sec = total % 60;
+    const pad = (n) => String(n).padStart(2, '0');
+    return h ? `${h}:${pad(m)}:${pad(sec)}` : `${m}:${pad(sec)}`;
+}
+
+const STREAM_PILL = {
+    reconnecting: ['Reconnecting', 'pill--warn', 'OBS lost the stream server and is trying again.'],
+    starting: ['Starting…', 'pill--warn', ''],
+    stopping: ['Ending…', 'pill--warn', ''],
+    off: ['Not live', 'pill--off', ''],
+};
+
+/** The stream row: what the stream is doing, and the one action that fits it. */
+function renderObsStream() {
+    const connected = !!(obsStatus && obsStatus.connected);
+    el('obs-stream').hidden = !connected;
+    if (!connected) {
+        cancelObsStop();
+        clearInterval(obsTicker);
+        obsTicker = null;
+        return;
+    }
+    const stream = obsStatus.stream || { state: 'off' };
+    const live = el('obs-live');
+    const note = el('obs-stream-note');
+    let [text, tone, hint] = STREAM_PILL[stream.state] || STREAM_PILL.off;
+    if (stream.state === 'live') {
+        text = stream.startedAt != null ? `Live ${formatUptime(Date.now() - stream.startedAt)}` : 'Live';
+        tone = 'pill--live';
+    }
+    if (obsStop) hint = `Ending in ${obsStop.left} s`;
+    live.textContent = text;
+    live.className = `pill ${tone}`;
+    note.textContent = hint;
+
+    const streaming = ['live', 'reconnecting', 'starting'].includes(stream.state);
+    el('obs-start').hidden = streaming || stream.state === 'stopping' || !!obsStop;
+    el('obs-stop').hidden = !streaming || !!obsStop;
+    el('obs-undo').hidden = !obsStop;
+    el('obs-start').disabled = obsBusy;
+    el('obs-stop').disabled = obsBusy;
+
+    // A 1 s tick only while the uptime is on screen and counting.
+    const ticking = stream.startedAt != null && streaming;
+    if (ticking && !obsTicker) {
+        obsTicker = setInterval(renderObsStream, 1000);
+    } else if (!ticking && obsTicker) {
+        clearInterval(obsTicker);
+        obsTicker = null;
+    }
+}
+
+function applyObsStatus(status) {
+    if (!status) return;
+    obsStatus = status;
+    const on = status.state === 'connected';
+    const bad = status.state === 'bad-password' || status.state === 'needs-password';
+    el('obs-conn-dot').className = `dot ${on ? 'dot--on' : bad ? 'dot--bad' : 'dot--off'}`;
+    el('obs-conn-text').textContent = on ? 'Connected' : (OBS_STATE_TEXT[status.state] || 'Not connected');
+    setPill(el('obs-status'), on, 'Online', 'Offline');
+    el('obs-dot').className = `dot ${on ? 'dot--on' : 'dot--off'}`;
+    // Connect only when nothing is trying; Disconnect also stops a reconnect loop that's waiting for the other PC.
+    const idle = ['off', 'bad-password', 'needs-password'].includes(status.state);
+    el('obs-connect').hidden = !idle;
+    el('obs-disconnect').hidden = idle;
+    setObsHint(on ? null : status.error);
+    // Setup words are for setting up: once connected the line goes (an error still shows, in the same place).
+    el('obs-hint').hidden = on;
+    // Connected to the PC that was picked: the search is done, so fold the list away.
+    if (on && obsFound && obsFound.some((row) => row.url === status.url)) obsFound = null;
+    renderObsFound();
+    renderObsStream();
+}
+
+function emptyRow(text) {
+    const li = document.createElement('li');
+    li.className = 'is-empty';
+    li.textContent = text;
+    return li;
+}
+
+function renderObsFound() {
+    const list = el('obs-found');
+    list.hidden = !obsSearching && obsFound === null;
+    list.replaceChildren();
+    if (obsSearching) {
+        list.appendChild(emptyRow('Searching this network…'));
+        return;
+    }
+    if (!obsFound) return;
+    if (!obsFound.length) {
+        list.appendChild(emptyRow('No OBS found. On that PC, turn on Tools → WebSocket Server Settings and allow OBS through its firewall on private networks.'));
+        return;
+    }
+    obsFound.forEach((row) => {
+        const li = document.createElement('li');
+        const current = row.url === obsSettings.obsUrl && obsStatus && obsStatus.connected;
+        if (current) li.className = 'is-current';
+        const name = document.createElement('span');
+        name.className = 'list__name';
+        name.textContent = row.local ? 'This PC' : (row.name || row.host);
+        const meta = document.createElement('span');
+        meta.className = 'list__meta';
+        // The address only when there's a name above it: a PC that told us no name is already listed by address.
+        meta.textContent = current ? 'Connected' : (row.local || row.name ? row.host : '');
+        li.append(name, meta);
+        if (row.authRequired) {
+            const lock = document.createElement('span');
+            lock.title = 'Needs its WebSocket password';
+            lock.innerHTML = LOCK_ICON;
+            li.appendChild(lock);
+        }
+        if (!current) li.addEventListener('click', () => useObs(row));
+        list.appendChild(li);
+    });
+}
+
+async function findObs() {
+    obsSearching = true;
+    el('obs-find').disabled = true;
+    renderObsFound();
+    try {
+        obsFound = await window.lbcbot.findObs();
+    } finally {
+        obsSearching = false;
+        el('obs-find').disabled = false;
+        renderObsFound();
+    }
+}
+
+async function useObs(row) {
+    // A typed password goes with the pick, so choosing a PC that needs one is one click once it's in the field.
+    if (el('obs-password').value) await window.lbcbot.setObsPassword(el('obs-password').value);
+    const result = await window.lbcbot.useObs(row.host);
+    if (result && result.ok) {
+        obsFound = null; // done: fold the list away
+        renderObsFound();
+    } else if (result && result.needsPassword) {
+        el('obs-password').focus();
+    } else if (result && result.error) {
+        setObsHint(result.error);
+    }
+}
+
+async function setStreaming(on) {
+    obsBusy = true;
+    renderObsStream();
+    try {
+        const result = await window.lbcbot.setStreaming(on);
+        setObsHint(result && !result.ok ? result.error : null);
+    } finally {
+        obsBusy = false;
+        renderObsStream();
+    }
+}
+
+/** Stop waits STOP_UNDO_SECONDS with Undo in place of the Stop button, then sends. */
+function startObsStop() {
+    cancelObsStop();
+    obsStop = { left: STOP_UNDO_SECONDS, timer: null };
+    obsStop.timer = setInterval(() => {
+        obsStop.left -= 1;
+        if (obsStop.left <= 0) {
+            cancelObsStop();
+            setStreaming(false);
+        } else {
+            renderObsStream();
+        }
+    }, 1000);
+    renderObsStream();
+    el('obs-undo').focus();
+}
+
+function cancelObsStop() {
+    if (obsStop) clearInterval(obsStop.timer);
+    obsStop = null;
+}
+
 const GS_HINT = 'In GreenSplit: WebSocket Server → Enable, then Copy Connection URL.';
 const GS_STATE_TEXT = {
     connecting: 'Connecting…',
@@ -369,6 +596,10 @@ function applyState(state) {
             if (document.activeElement !== node) node.value = value ?? '';
         };
         assign(el('obs-url'), state.settings.obsUrl);
+        obsSettings = state.settings;
+        renderObsWhere();
+        // What is saved, masked, so an empty field still says a password is set (like GreenSplit's token).
+        el('obs-password').placeholder = state.hasObsPassword ? '••••••••  (saved)' : 'from OBS → Tools → WebSocket Server Settings';
         el('forward-events').checked = state.settings.forwardObsEvents !== false;
         el('auto-connect').checked = state.settings.autoConnectObs !== false;
         assign(el('gs-port'), state.settings.greensplitLivesplitPort);
@@ -383,6 +614,7 @@ function applyState(state) {
     wasConnected = !!state.lbcbotConnected;
     setStatus('lbc', state.lbcbotConnected);
     setStatus('obs', state.obsConnected);
+    applyObsStatus(state.obs);
     const switched = accountState.accounts.find((r) => r.active)?.id !== (state.accounts || []).find((r) => r.active)?.id;
     accountState = { accounts: state.accounts || [], full: !!state.accountsFull, adding: state.adding || null };
     if (state.maxAccounts) el('lbc-full').textContent = `Up to ${state.maxAccounts} accounts. Remove one to add another.`;
@@ -810,6 +1042,17 @@ function wire() {
         await refreshOverlays();
     });
     el('obs-disconnect').addEventListener('click', () => window.lbcbot.disconnectObs());
+    el('obs-password').addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') el('obs-connect').click();
+    });
+    el('obs-find').addEventListener('click', findObs);
+    el('obs-start').addEventListener('click', () => setStreaming(true));
+    el('obs-stop').addEventListener('click', startObsStop);
+    el('obs-undo').addEventListener('click', () => {
+        cancelObsStop();
+        renderObsStream();
+        el('obs-stop').focus();
+    });
 
     // Pasting the Connection URL is the whole setup — no button press needed. Enter or Connect does the same.
     el('gs-connect').addEventListener('click', connectGreenSplit);
@@ -878,7 +1121,10 @@ function wire() {
     window.lbcbot.onState(applyState);
     window.lbcbot.onUpdateStatus(applyUpdateStatus);
     window.lbcbot.onLog(appendLog);
-    window.lbcbot.onObsStatus((status) => setStatus('obs', status.connected));
+    window.lbcbot.onObsStatus((status) => {
+        setStatus('obs', status.connected);
+        applyObsStatus(status);
+    });
     window.lbcbot.onGreenSplitStatus(applyGreenSplitStatus);
 }
 

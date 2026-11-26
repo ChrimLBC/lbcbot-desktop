@@ -1,8 +1,5 @@
 'use strict';
 
-const OBSWebSocket = require('obs-websocket-js').default;
-const store = require('./store');
-
 /**
  * The obs-websocket bridge — the whole reason this app exists.
  *
@@ -11,56 +8,263 @@ const store = require('./store');
  * integration promised is here — scene switching, source visibility, recording control, and an event stream — and it
  * only ever needed one long-running local process to talk to.
  *
+ * The OBS can be on another computer (2026-11-26): with NDI, the PC running this app is often the source and a second
+ * PC runs the OBS that goes live. That is why the connection retries on its own (a LAN link drops and comes back, and
+ * the other PC's OBS may start after this app) and why this bridge can start and stop the stream.
+ *
  * Both directions live in this file:
  *  - OBS -> LBCBot: scene/stream/source events become LBCBot triggers.
  *  - LBCBot -> OBS: the OBS actions attached to triggers are executed here.
  */
 
+const RETRY_MIN_MS = 1000;
+const RETRY_MAX_MS = 30000;
+/** obs-websocket's close code for a wrong password: retrying can't fix it, so the loop stops there. */
+const AUTH_FAILED = 4009;
+/** obs-websocket request statuses for "already streaming" / "not streaming": the stream is already as asked. */
+const OUTPUT_RUNNING = 500;
+const OUTPUT_NOT_RUNNING = 501;
+
+/** The wait before retry number `attempt` (0-based): 1 s, 2 s, 4 s … capped at 30 s. */
+function retryDelay(attempt, min = RETRY_MIN_MS, max = RETRY_MAX_MS) {
+    return Math.min(min * (2 ** Math.max(0, attempt)), max);
+}
+
+/** obs-websocket's output states as what the stream is doing. A state not listed leaves the stream as it was. */
+const STREAM_STATES = {
+    OBS_WEBSOCKET_OUTPUT_STARTING: 'starting',
+    OBS_WEBSOCKET_OUTPUT_STARTED: 'live',
+    OBS_WEBSOCKET_OUTPUT_RECONNECTING: 'reconnecting',
+    OBS_WEBSOCKET_OUTPUT_RECONNECTED: 'live',
+    OBS_WEBSOCKET_OUTPUT_STOPPING: 'stopping',
+    OBS_WEBSOCKET_OUTPUT_STOPPED: 'off',
+};
+
+function isAuthError(error) {
+    return Boolean(error) && (error.code === AUTH_FAILED || /auth/i.test(error.message || ''));
+}
+
+/** The host part of a ws:// URL, for "Connected to 10.0.0.88". */
+function hostOf(url) {
+    try {
+        return new URL(url).hostname;
+    } catch (error) {
+        return '';
+    }
+}
+
 class ObsBridge {
-    constructor({ onLog, onStatus, onObsEvent }) {
-        this.obs = new OBSWebSocket();
+    constructor({
+        onLog, onStatus, onObsEvent,
+        // Loaded here, not at the top, so the tests can pass a stand-in without the package installed.
+        client = new (require('obs-websocket-js').default)(),
+        settings = () => require('./store').settings(),
+        password = () => require('./store').getObsPassword(),
+        setTimer = setTimeout, clearTimer = clearTimeout, now = Date.now,
+    }) {
+        this.obs = client;
+        this.settings = settings;
+        this.password = password;
+        this.setTimer = setTimer;
+        this.clearTimer = clearTimer;
+        this.now = now;
         this.onLog = onLog || (() => {});
         this.onStatus = onStatus || (() => {});
         this.onObsEvent = onObsEvent || (() => {});
         this.connected = false;
         this.currentScene = null;
+        /** Whether a connection is wanted: Connect sets it, Disconnect clears it. Retries run only while it is set. */
+        this.wanted = false;
+        this.retryTimer = null;
+        this.retryAttempt = 0;
+        /** One log line per outage, not one per retry: the other PC can be off for a whole evening. */
+        this.outageLogged = false;
+        /** `off`, `connecting`, `retrying`, `connected`, `needs-password` (none saved) or `bad-password`. */
+        this.state = 'off';
+        this.error = null;
+        this.url = '';
+        /** What the stream is doing (`off`, `starting`, `live`, `reconnecting`, `stopping`), and since when it's live. */
+        this.stream = { state: 'off', startedAt: null };
         /** Timers for SET_SOURCE_VISIBLE actions with a revertAfterSeconds, keyed so repeats restart the clock. */
         this.revertTimers = new Map();
         this.wireEvents();
     }
 
+    get status() {
+        return {
+            connected: this.connected,
+            state: this.state,
+            url: this.url,
+            host: hostOf(this.url),
+            error: this.error,
+            stream: { ...this.stream },
+        };
+    }
+
+    /** Whether the last try failed only on the password: a new one should be tried at once. */
+    get passwordProblem() {
+        return this.state === 'bad-password' || this.state === 'needs-password';
+    }
+
+    publish() {
+        this.onStatus(this.status);
+    }
+
+    /**
+     * Connect, and keep reconnecting until it works or Disconnect is pressed. Answers whether the first attempt
+     * connected. A wrong password stops the loop: only a new password can fix that.
+     */
     async connect() {
-        const { obsUrl } = store.settings();
-        const password = store.getObsPassword();
+        this.wanted = true;
+        this.retryAttempt = 0;
+        this.outageLogged = false;
+        this.cancelRetry();
+        return this.attempt();
+    }
+
+    async attempt() {
+        const { obsUrl } = this.settings();
+        const password = this.password();
+        this.url = obsUrl;
+        if (!this.connected) {
+            this.state = this.retryAttempt === 0 ? 'connecting' : 'retrying';
+            this.publish();
+        }
         try {
             await this.obs.connect(obsUrl, password || undefined);
-            this.connected = true;
-            const scene = await this.obs.call('GetCurrentProgramScene').catch(() => null);
-            this.currentScene = scene ? scene.sceneName || scene.currentProgramSceneName : null;
-            this.onLog(`Connected to OBS at ${obsUrl}.`);
-            this.onStatus({ connected: true, currentScene: this.currentScene });
-            return true;
         } catch (error) {
             this.connected = false;
-            // The two realistic causes are worth separating, because the fix differs and the raw message is cryptic.
-            const hint = /auth/i.test(error.message)
-                ? 'OBS rejected the password — check Tools → WebSocket Server Settings.'
-                : 'Could not reach OBS. Is it running, with the WebSocket server enabled?';
-            this.onLog(`${hint} (${error.message})`);
-            this.onStatus({ connected: false, error: hint });
+            if (!this.wanted) {
+                return false;
+            }
+            if (isAuthError(error)) {
+                this.wanted = false;
+                this.state = password ? 'bad-password' : 'needs-password';
+                this.error = password
+                    ? 'OBS rejected the password. Check Tools → WebSocket Server Settings on that PC.'
+                    : 'That OBS needs its password, from Tools → WebSocket Server Settings on that PC.';
+                this.onLog(`${this.error} (${error.message})`);
+                this.publish();
+                return false;
+            }
+            this.error = `Can't reach OBS at ${hostOf(obsUrl) || obsUrl}. Check that OBS is open there, its WebSocket server is on, and its firewall allows it.`;
+            if (!this.outageLogged) {
+                this.onLog(`${this.error} Trying again until it answers. (${error.message})`);
+                this.outageLogged = true;
+            }
+            this.scheduleRetry();
             return false;
+        }
+        if (!this.wanted) {
+            // Disconnect was pressed while this attempt was in flight.
+            await this.obs.disconnect().catch(() => {});
+            return false;
+        }
+        this.connected = true;
+        this.state = 'connected';
+        this.error = null;
+        this.retryAttempt = 0;
+        this.outageLogged = false;
+        const scene = await this.obs.call('GetCurrentProgramScene').catch(() => null);
+        this.currentScene = scene ? scene.sceneName || scene.currentProgramSceneName : null;
+        await this.readStreamStatus();
+        this.onLog(`Connected to OBS at ${obsUrl}.`);
+        this.publish();
+        return true;
+    }
+
+    scheduleRetry() {
+        this.cancelRetry();
+        this.state = 'retrying';
+        this.publish();
+        const delay = retryDelay(this.retryAttempt);
+        this.retryAttempt += 1;
+        this.retryTimer = this.setTimer(() => {
+            this.retryTimer = null;
+            if (this.wanted) this.attempt();
+        }, delay);
+    }
+
+    cancelRetry() {
+        if (this.retryTimer) {
+            this.clearTimer(this.retryTimer);
+            this.retryTimer = null;
         }
     }
 
     async disconnect() {
+        this.wanted = false;
+        this.cancelRetry();
         try {
             await this.obs.disconnect();
         } catch (error) {
             // Already gone.
         }
         this.connected = false;
+        this.state = 'off';
+        this.error = null;
+        this.stream = { state: 'off', startedAt: null };
         this.clearRevertTimers();
-        this.onStatus({ connected: false });
+        this.publish();
+    }
+
+    /**
+     * Point at another OBS (a new address or password): reconnect there if a connection was wanted, or if the last
+     * try failed only on the password.
+     */
+    async reconnect() {
+        if (!this.wanted && !this.passwordProblem) {
+            return false;
+        }
+        this.wanted = false;
+        this.cancelRetry();
+        await this.obs.disconnect().catch(() => {});
+        this.connected = false;
+        return this.connect();
+    }
+
+    // ------------------------------------------------------------------ the stream
+
+    async readStreamStatus() {
+        const status = await this.obs.call('GetStreamStatus').catch(() => null);
+        if (!status || !status.outputActive) {
+            this.stream = { state: 'off', startedAt: null };
+            return;
+        }
+        this.stream = {
+            state: status.outputReconnecting ? 'reconnecting' : 'live',
+            startedAt: this.now() - (Number(status.outputDuration) || 0),
+        };
+    }
+
+    applyStreamState(outputState) {
+        const state = STREAM_STATES[outputState];
+        if (!state) {
+            return;
+        }
+        let { startedAt } = this.stream;
+        if (state === 'live' && startedAt == null) startedAt = this.now();
+        if (state === 'off') startedAt = null;
+        this.stream = { state, startedAt };
+        this.publish();
+    }
+
+    /** Start or stop the stream. Answers `{ ok }`, or `{ ok: false, error }` in words to show. */
+    async setStreaming(on) {
+        if (!this.connected) {
+            return { ok: false, error: 'Not connected to OBS.' };
+        }
+        try {
+            await this.obs.call(on ? 'StartStream' : 'StopStream');
+            this.onLog(on ? 'Asked OBS to start the stream.' : 'Asked OBS to stop the stream.');
+            return { ok: true };
+        } catch (error) {
+            if (error && (error.code === OUTPUT_RUNNING || error.code === OUTPUT_NOT_RUNNING)) {
+                return { ok: true };
+            }
+            this.onLog(`Could not ${on ? 'start' : 'stop'} the stream: ${error.message}`);
+            return { ok: false, error: on ? 'OBS could not start the stream. Check its Stream settings.' : 'OBS could not stop the stream.' };
+        }
     }
 
     // ------------------------------------------------------------------ OBS -> LBCBot
@@ -76,8 +280,18 @@ class ObsBridge {
         this.obs.on('ConnectionClosed', () => {
             if (this.connected) {
                 this.connected = false;
-                this.onLog('OBS connection closed.');
-                this.onStatus({ connected: false });
+                this.stream = { state: 'off', startedAt: null };
+                this.clearRevertTimers();
+                if (this.wanted) {
+                    this.onLog('Lost the connection to OBS. Reconnecting…');
+                    this.outageLogged = true;
+                    this.retryAttempt = 0;
+                    this.scheduleRetry();
+                } else {
+                    this.state = 'off';
+                    this.onLog('OBS connection closed.');
+                    this.publish();
+                }
             }
         });
 
@@ -88,6 +302,7 @@ class ObsBridge {
         });
 
         this.obs.on('StreamStateChanged', ({ outputActive, outputState }) => {
+            this.applyStreamState(outputState);
             // OBS emits intermediate states (STARTING, STOPPING) on the same event; only the settled ones are
             // meaningful as a trigger, or a single "go live" would fire twice.
             if (outputState === 'OBS_WEBSOCKET_OUTPUT_STARTED') {
@@ -115,7 +330,7 @@ class ObsBridge {
     }
 
     emit(eventType, payload) {
-        if (!store.settings().forwardObsEvents) {
+        if (!this.settings().forwardObsEvents) {
             return;
         }
         this.onObsEvent({ eventType, ...payload });
@@ -180,6 +395,12 @@ class ObsBridge {
                 case 'SAVE_REPLAY_BUFFER':
                     await this.obs.call('SaveReplayBuffer');
                     break;
+                case 'START_STREAM':
+                case 'STOP_STREAM': {
+                    const result = await this.setStreaming(action.type === 'START_STREAM');
+                    if (!result.ok) return;
+                    break;
+                }
                 default:
                     this.onLog(`Unknown OBS action type "${action.type}" — ignoring.`);
                     return;
@@ -286,4 +507,4 @@ class ObsBridge {
     }
 }
 
-module.exports = { ObsBridge };
+module.exports = { ObsBridge, retryDelay, STREAM_STATES };

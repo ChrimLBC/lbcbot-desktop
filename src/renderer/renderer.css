@@ -603,3 +603,31 @@ button:focus-visible { outline: 2px solid rgba(var(--accent-rgb), 0.6); outline-
 .account-add { display: inline-flex; align-items: center; gap: 7px; }
 .account-add svg { width: 15px; height: 15px; }
 .device-code__code { color: var(--ink); font-weight: 700; letter-spacing: 0.04em; }
+
+/* ---------------------------------------------------------------------------------------------------------------------
+   OBS on another PC (2026-11-26): where OBS is, the network scan's results, and the stream's Start / Stop row.
+   --------------------------------------------------------------------------------------------------------------------- */
+.obs-where { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.obs-where small { color: var(--muted); font-size: 12px; margin-left: 6px; }
+.obs-found { margin: 4px 0 8px; padding: 0 10px; border-radius: 8px; background: rgba(255, 255, 255, 0.03); }
+.obs-found li { cursor: pointer; padding: 8px 4px; }
+.obs-found li:hover { color: #fff; }
+.obs-found li.is-current { color: var(--accent); cursor: default; }
+.obs-found li.is-empty { cursor: default; color: var(--muted); font-size: 12.5px; }
+.obs-found svg { width: 13px; height: 13px; color: var(--muted); flex: 0 0 auto; }
+.obs-stream {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 14px;
+    padding-top: 12px;
+    border-top: 1px solid var(--line);
+    min-height: 42px; /* the same height whether it shows Start, Stop, or Undo: nothing below moves */
+}
+.obs-stream .pill { font-variant-numeric: tabular-nums; }
+.pill--live { background: rgba(248, 113, 113, 0.16); color: var(--bad); }
+.pill--warn { background: rgba(251, 191, 36, 0.16); color: #fbbf24; }
+.obs-stream__note { flex: 1 1 auto; min-width: 0; color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.obs-stream .icon-btn { margin-left: 0; }
+.obs-stream__go { color: var(--on); }
+.obs-stream__go:hover:not(:disabled) { border-color: rgba(52, 211, 153, 0.65); box-shadow: 0 0 0 2px rgba(52, 211, 153, 0.2); }

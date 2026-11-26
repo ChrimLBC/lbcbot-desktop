@@ -23,6 +23,10 @@ const FILE = () => path.join(app.getPath('userData'), 'settings.json');
 
 const DEFAULTS = {
     obsUrl: 'ws://127.0.0.1:4455',
+    /** The name of the PC at obsUrl when it was picked from "Find OBS on my network": empty for a typed address. */
+    obsName: '',
+    /** Whether obsUrl is this PC, as the scan found it ("This PC" on the card). */
+    obsLocal: true,
     autoConnectObs: true,
     forwardObsEvents: true,
     /**

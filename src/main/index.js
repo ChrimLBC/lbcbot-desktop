@@ -6,6 +6,7 @@ const store = require('./store');
 const sites = require('./sites');
 const { LbcBot } = require('./lbcbot');
 const { ObsBridge } = require('./obs');
+const obsDiscovery = require('./obsdiscovery');
 const { GreenSplitBridge, parseConnectionUrl } = require('./greensplit');
 const { MAX_ACCOUNTS } = require('./accounts');
 const { routeDeviceCommand } = require('./devicecontrol');
@@ -1101,6 +1102,8 @@ async function pushState() {
         settings: store.settings(),
         lbcbotConnected: store.hasCredential(),
         obsConnected: obs ? obs.connected : false,
+        // Where OBS is, the connection's state and the stream's (obs.js `status`). Never the password.
+        obs: obs ? obs.status : null,
         userId: lbcbot ? lbcbot.userId : null,
         // The accounts without their credentials, and the code of a sign-in waiting for its approval.
         accounts: store.accounts(),
@@ -1184,8 +1187,17 @@ function registerIpc() {
         // GreenSplit's address and on/off change only through connect/disconnect/forget below: the address is where
         // the keychain token gets sent, so the renderer never gets to write it unchecked.
         const { greensplitUrl, greensplitEnabled, ...patch } = rawPatch || {};
+        const before = store.settings().obsUrl;
         const updated = store.update(patch);
         greensplit.settingsChanged(); // a new LiveSplit adapter port takes effect at once
+        if (store.settings().obsUrl !== before) {
+            if (patch.obsName === undefined) {
+                // A typed address: the name the scan gave the old one no longer applies.
+                const url = store.settings().obsUrl;
+                store.update({ obsName: '', obsLocal: /^wss?:\/\/(127\.0\.0\.1|localhost)(:|\/|$)/i.test(url) });
+            }
+            obs.reconnect(); // a typed address takes effect at once; not awaited, it may retry for a while
+        }
         await pushState();
         return updated;
     });
@@ -1233,6 +1245,35 @@ function registerIpc() {
         await pushState();
         return true;
     });
+
+    /*
+     * "Find OBS on my network" (obsdiscovery.js). The renderer gets the list to show and may then pick one by its
+     * address: only an address from the last scan is accepted, so a renderer can't point the OBS password anywhere else.
+     */
+    let lastObsScan = [];
+    ipcMain.handle('find-obs', async () => {
+        try {
+            lastObsScan = await obsDiscovery.discover();
+        } catch (error) {
+            log(`Could not search the network for OBS: ${error.message}`);
+            lastObsScan = [];
+        }
+        return lastObsScan;
+    });
+
+    ipcMain.handle('use-obs', async (_event, host) => {
+        const row = lastObsScan.find((r) => r.host === String(host));
+        if (!row) {
+            return { ok: false, error: 'Search again: that PC is no longer in the list.' };
+        }
+        store.update({ obsUrl: row.url, obsName: row.name || '', obsLocal: row.local });
+        const ok = await obs.connect();
+        await pushState();
+        return { ok, needsPassword: !ok && obs.passwordProblem };
+    });
+
+    // Start or stop the stream on the connected OBS. The Undo window before a stop lives in the renderer.
+    ipcMain.handle('set-streaming', async (_event, on) => obs.setStreaming(Boolean(on)));
 
     /*
      * Turn GreenSplit on. `pasted` is a Connection URL straight from GreenSplit (or empty to reconnect with the saved
