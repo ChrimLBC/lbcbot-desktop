@@ -50,7 +50,7 @@ contextBridge.exposeInMainWorld('lbcbotDesktop', {
      * The accounts this computer is signed in to, for the page's account menu: `[{ id, userId, username, platform,
      * active, signedOut }]`, never a credential. `switchAccount(id)` makes one the account in use and reloads every
      * other dashboard window (the asking page reloads itself once it answers `{ ok }`). `addAccount()` starts the same
-     * sign-in as the app's Status pane: `{ ok, userCode, verificationUri }` as soon as the code is out, and when it is
+     * sign-in as the app's account menu: `{ ok, userCode, verificationUri }` as soon as the code is out, and when it is
      * approved the new account is the one in use and every dashboard window reloads as it.
      */
     accounts: () => ipcRenderer.invoke('dashboard-accounts'),

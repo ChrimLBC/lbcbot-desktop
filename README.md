@@ -56,7 +56,7 @@ client are all tested directly (`test/greensplit.test.js`, replaying a recorded 
 **Setting it up**
 
 1. In GreenSplit: **WebSocket Server → Enable WebSocket event server**, then **Copy Connection URL**.
-2. Paste it into the GreenSplit card on the Status pane. That is the whole setup — no button needed. The address goes
+2. Paste it into the GreenSplit card in Settings (account menu, bottom left). That is the whole setup — no button needed. The address goes
    into settings and the `token` in it into the keychain, like the OBS password; the field then shows the saved URL
    with the token masked. Only an address on this computer or the local network is accepted (see Security model).
 3. To let LBCBot drive the timer too: **LiveSplit Server Adapter → Enable LiveSplit Server Adapter**. It listens on

@@ -619,10 +619,10 @@ async function openDashboardWindow(dashboardId) {
      * app is pointed at.
      */
     if (!store.hasCredential()) {
-        return { ok: false, error: 'Connect this app to LBCBot first — see the Status pane.' };
+        return { ok: false, error: 'Connect this app to LBCBot first: click LBCBot at the bottom left.' };
     }
     if (!await lbcbot.token()) {
-        return { ok: false, error: 'LBCBot would not accept this machine\'s credential. Reconnect in the Status pane.' };
+        return { ok: false, error: 'LBCBot would not accept this machine\'s credential. Sign in again from the account menu, bottom left.' };
     }
 
     const saved = usableBounds(store.dashboardWindow(key));
@@ -1050,7 +1050,7 @@ function buildServices() {
         onGreenSplitEvent: async (event, { signal }) => {
             // GreenSplit -> LBCBot. The bridge sends these one at a time (so a split's SPLIT, GOLD and PACE arrive in
             // that order), bounds each with `signal`, and logs failures once per spell rather than once per trigger.
-            // Without a credential there is nowhere to send them, and the Status pane already says so.
+            // Without a credential there is nowhere to send them, and the account chip already says so.
             if (!store.hasCredential()) {
                 return { ok: true };
             }
@@ -1157,7 +1157,7 @@ function registerIpc() {
         const hadCredential = store.hasCredential();
         const session = await lbcbot.session({ fresh: fresh === true });
         if (!session && hadCredential && !store.hasCredential()) {
-            pushState(); // the API refused the credential just now: the Status pane says to sign in again
+            pushState(); // the API refused the credential just now: the account menu says to sign in again
         }
         return session;
     });
@@ -1220,7 +1220,7 @@ function registerIpc() {
         return true;
     });
 
-    // The Status pane's accounts: add one (the device flow), switch to one, remove one.
+    // The account menu's accounts: add one (the device flow), switch to one, remove one.
     ipcMain.handle('add-account', async () => addAccount());
 
     ipcMain.handle('switch-account', async (_event, id) => switchAccount(String(id)));

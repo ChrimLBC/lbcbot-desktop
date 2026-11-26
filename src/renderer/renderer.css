@@ -279,73 +279,7 @@ button.primary:hover:not(:disabled) { background: #6c37bd; }
     word-break: break-word;
 }
 
-/* ---- Stream setup ------------------------------------------------------- */
-
-/*
- * List beside editor. The list is narrow and fixed because it holds short names; the editor takes the rest,
- * since it is the thing with a dozen fields in it.
- */
-.split {
-    display: grid;
-    grid-template-columns: 220px 1fr;
-    gap: 14px;
-    align-items: start;
-}
-
-/* Below this the two columns stop being usable side by side — stack instead of squeezing. */
-@media (max-width: 860px) {
-    .split { grid-template-columns: 1fr; }
-}
-
-.split__list .list li { cursor: pointer; }
-
-.template-row {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    width: 100%;
-    padding: 7px 8px;
-    border: none;
-    border-radius: 7px;
-    background: none;
-    color: var(--ink);
-    font-size: 13px;
-    text-align: left;
-    cursor: pointer;
-}
-
-.template-row:hover:not(.is-active) { background: rgba(255, 255, 255, 0.05); }
-.template-row.is-active { background: rgba(90, 44, 160, 0.35); font-weight: 600; }
-
-/* Section heading inside the editor, separating the two platforms. */
-.group {
-    margin: 16px 0 8px;
-    padding-top: 12px;
-    border-top: 1px solid var(--line);
-    font-size: 12px;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.07em;
-    color: var(--muted);
-}
-.group:first-of-type { border-top: none; padding-top: 0; }
-
-/* A textarea row has to align its label to the top, not the vertical centre of four rows of text. */
-.row--tall { align-items: flex-start; }
-.row--tall label { padding-top: 6px; }
-
-.row textarea {
-    flex: 1 1 auto;
-    min-width: 0;
-    padding: 6px 8px;
-    border: 1px solid var(--line);
-    border-radius: 6px;
-    background: #14151a;
-    color: var(--ink);
-    font: inherit;
-    font-size: 13px;
-    resize: vertical;
-}
+/* ---- Stream setup: see "Stream setup — the Stream Planner" at the end of the file. */
 
 /* ---- Linked platforms --------------------------------------------------- */
 
@@ -484,8 +418,8 @@ button:hover:not(:disabled) {
 button.primary { border-color: transparent; background: var(--accent); color: var(--on-accent); font-weight: 600; }
 button.primary:hover:not(:disabled) { background: #47d4e3; }
 button:focus-visible { outline: 2px solid rgba(var(--accent-rgb), 0.6); outline-offset: 1px; }
-.nav__item, .template-row { box-shadow: none !important; }
-.nav__item:hover:not(:disabled), .template-row:hover:not(:disabled) { border-color: transparent; }
+.nav__item { box-shadow: none !important; }
+.nav__item:hover:not(:disabled) { border-color: transparent; }
 
 /* On/off settings are switches, as on the website: the squared "Soft fill" switch (32×16, faint teal fill and a teal
    knob when on). Disabled fades less than usual because the off state already starts faint. */
@@ -521,27 +455,7 @@ button:focus-visible { outline: 2px solid rgba(var(--accent-rgb), 0.6); outline-
 .row input[type="checkbox"]:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .row input[type="checkbox"]:disabled { opacity: 0.65; cursor: not-allowed; }
 
-.template-row.is-active,
 .nav__item.is-active { box-shadow: none; }
-.template-row.is-active { background: rgba(var(--accent-rgb), 0.14); }
-
-/* Segmented choice (a new template's platform): all options visible, the chosen one in the accent. */
-.seg { display: inline-flex; gap: 4px; }
-.seg button { padding: 5px 12px; font-size: 12.5px; }
-.seg button.is-active { background: var(--accent); border-color: transparent; color: var(--on-accent); font-weight: 600; }
-
-/* Which platform a template is for — only shown when both are linked. */
-.tag {
-    margin-left: auto;
-    padding: 1px 7px;
-    border-radius: 999px;
-    font-size: 10.5px;
-    font-weight: 700;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-}
-.tag--twitch { color: #c4a5ff; background: rgba(145, 70, 255, 0.18); }
-.tag--youtube { color: #ff8a84; background: rgba(255, 78, 69, 0.16); }
 
 .pill--on { background: rgba(52, 211, 153, 0.14); color: var(--on); }
 .dot--on { box-shadow: 0 0 0 3px rgba(52, 211, 153, 0.16); }
@@ -634,3 +548,118 @@ button:focus-visible { outline: 2px solid rgba(var(--accent-rgb), 0.6); outline-
 .obs-stream .icon-btn { margin-left: 0; }
 .obs-stream__go { color: var(--on); }
 .obs-stream__go:hover:not(:disabled) { border-color: rgba(52, 211, 153, 0.65); box-shadow: 0 0 0 2px rgba(52, 211, 153, 0.2); }
+
+/* ---------------------------------------------------------------------------------------------------------------------
+   2026-11-26 — the account manager in the sidebar: the account in use is the last of the rail's connections (its
+   avatar carries LBCBot's dot), and a click opens the accounts above it — the website's account menu, anchored where
+   the click was. The menu is wider than the 200px rail and overlaps the pane beside it, so names and the code fit.
+   --------------------------------------------------------------------------------------------------------------------- */
+.acct { position: relative; margin: 3px -6px 0; }
+.acct__chip {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    width: 100%;
+    padding: 6px 8px;
+    border: 1px solid transparent;
+    border-radius: 10px;
+    background: transparent;
+    text-align: left;
+    box-shadow: none !important;
+}
+.acct__chip:hover:not(:disabled), .acct.is-open .acct__chip { background: rgba(255, 255, 255, 0.05); border-color: transparent; }
+.acct__avatar {
+    position: relative;
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    border-radius: 50%;
+    background: rgba(var(--accent-rgb), 0.18);
+    color: var(--accent);
+    font-size: 13px;
+    font-weight: 700;
+}
+.acct__avatar--out, .acct__avatar--none { background: rgba(107, 114, 128, 0.22); color: var(--muted); }
+.acct__initial { display: inline-flex; }
+.acct__initial svg { width: 15px; height: 15px; }
+/* LBCBot's connection dot, on the avatar's corner, ringed in the rail's colour so it reads against the avatar. */
+.acct__presence { position: absolute; right: -1px; bottom: -1px; width: 10px; height: 10px; box-shadow: 0 0 0 2px #0f111a !important; }
+.acct__avatar--none .acct__presence { display: none; }
+.acct__text { display: flex; flex: 1 1 auto; flex-direction: column; min-width: 0; line-height: 1.25; }
+.acct__name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #fff; font-size: 13px; font-weight: 600; }
+.acct__sub { font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.acct__sub--on { color: var(--on); }
+.acct__sub--muted { color: var(--muted); }
+.acct__sub--warn { color: #fbbf24; }
+.acct__chev { flex: 0 0 auto; width: 14px; height: 14px; color: var(--muted); transition: transform 0.15s ease; }
+.acct.is-open .acct__chev { transform: rotate(180deg); }
+
+.acct__menu {
+    position: absolute;
+    left: 0;
+    bottom: calc(100% + 6px);
+    z-index: 30;
+    width: 272px;
+    padding: 6px;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 12px;
+    background: #171a27;
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+}
+.acct__menu .accounts { margin: 0 0 4px; padding-bottom: 4px; border-bottom: 1px solid var(--line); }
+.acct__menu .accounts li.account { gap: 2px; padding: 1px 0; border-top: none; }
+.acct__menu .account__main { padding: 6px 8px; border-radius: 8px; }
+.acct__menu .account__remove { width: 28px; height: 28px; border-color: transparent; }
+.acct__menu .account-add {
+    display: flex;
+    width: 100%;
+    gap: 10px;
+    padding: 7px 8px;
+    border-color: transparent;
+    border-radius: 8px;
+    color: var(--muted);
+    box-shadow: none !important;
+}
+.acct__menu .account-add svg { width: 16px; height: 16px; margin: 0 6px; }
+.acct__menu .account-add:hover:not(:disabled) { background: rgba(255, 255, 255, 0.05); border-color: transparent; color: #fff; }
+.acct__note { margin: 2px 8px 6px; line-height: 1.45; }
+.acct__menu .list:empty + .account-add { margin-top: 0; }
+
+@media (prefers-reduced-motion: reduce) { .acct__chev { transition: none; } }
+
+/* The rail's OBS / GreenSplit lines open Settings, where each is fixed: a line, not a button, until hovered. */
+.statusline--link {
+    width: calc(100% + 12px);
+    margin: -3px -6px;
+    padding: 3px 6px;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: inherit;
+    font-size: 11.5px;
+    text-align: left;
+    box-shadow: none !important;
+}
+.statusline--link:hover:not(:disabled) { background: rgba(255, 255, 255, 0.05); }
+.statusline--link:hover .statusline__label { color: var(--ink); }
+
+/* The account menu's Settings: under Add account, over a hairline; teal while its pane is open. */
+.acct__menu .acct__settings { margin-top: 4px; position: relative; }
+.acct__menu .acct__settings::before {
+    content: "";
+    position: absolute;
+    left: 2px;
+    right: 2px;
+    top: -3px;
+    border-top: 1px solid var(--line);
+}
+.acct__menu .acct__settings.is-active { color: var(--accent); }
+
+/* Settings: the cards flow in two columns when there is room for both at a usable width. */
+.settings-grid { column-width: 440px; column-gap: 14px; }
+.settings-grid > .card { break-inside: avoid; display: block; }
+/* A card's hint over its first field: a breath between them, not flush. */
+.card > .hint + .row { margin-top: 10px; }

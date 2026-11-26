@@ -19,18 +19,23 @@ function setPill(node, on, onText, offText) {
 /**
  * Connection state, shown as a dot beside its pill in the sidebar.
  *
- * The pills live in the rail rather than in the Status pane so that connection state is readable from every
+ * The pills live in the rail rather than in a pane so that connection state is readable from every
  * pane — the one piece of state that matters no matter what you are doing.
  */
 function setStatus(name, on) {
+    // LBCBot's line is the account chip (renderAccounts draws its dot and words).
+    if (name === 'lbc') {
+        lbcOnline = !!on;
+        renderAccountChip();
+        return;
+    }
     // "Online / Offline" rather than "Connected / Not connected": the rail is 200px, and the longer words wrapped
     // the pill onto two lines, then (with "GreenSplit" as a label) pushed it past the rail's edge. The dot carries
     // the same meaning anyway, so the word only has to confirm it. The cards say "Connected" in full.
     setPill(el(`${name}-status`), on, 'Online', 'Offline');
     el(`${name}-dot`).className = `dot ${on ? 'dot--on' : 'dot--off'}`;
 
-    // Only offer what can happen now: Connect while offline, Disconnect while connected. (LBCBot's card offers its
-    // accounts instead: renderAccounts.)
+    // Only offer what can happen now: Connect while offline, Disconnect while connected.
     if (name === 'obs') {
         el('obs-connect').hidden = !!on;
         el('obs-disconnect').hidden = !on;
@@ -54,8 +59,9 @@ function setStatus(name, on) {
  * Sidebar navigation.
  *
  * Wired generically off `data-pane` so adding a section is one nav button and one `.pane` — nothing here needs
- * to learn its name. Deliberately not persisted: a launch should always open on Status, because that is where
- * you act when something failed to connect.
+ * to learn its name. Settings isn't in the nav (2026-11-26): it opens from the account menu, and from the rail's OBS and
+ * GreenSplit lines, the place each is fixed. Deliberately not persisted: a launch opens on Dashboards, the pane used
+ * every stream, or on Settings while no account is connected yet (applyState).
  */
 /*
  * The lists each pane shows come from the account, so they are re-read when the pane is opened — the startup read
@@ -66,7 +72,7 @@ const PANE_REFRESH = {
     templates: () => refreshTemplates(),
     overlays: () => refreshOverlays(),
     dashboards: () => refreshDashboards(),
-    status: () => refreshPlatforms(),
+    settings: () => refreshPlatforms(),
 };
 
 function showPane(name) {
@@ -76,14 +82,17 @@ function showPane(name) {
     document.querySelectorAll('.pane').forEach((node) => {
         node.classList.toggle('is-active', node === pane);
     });
-    document.querySelectorAll('.nav__item').forEach((node) => {
+    document.querySelectorAll('.nav__item, #acct-settings').forEach((node) => {
         node.classList.toggle('is-active', node.dataset.pane === name);
     });
 }
 
 function wireNav() {
-    document.querySelectorAll('.nav__item').forEach((node) => {
-        node.addEventListener('click', () => showPane(node.dataset.pane));
+    document.querySelectorAll('.nav [data-pane]').forEach((node) => {
+        node.addEventListener('click', () => {
+            showPane(node.dataset.pane);
+            setMenuOpen(false);
+        });
     });
 }
 
@@ -472,6 +481,7 @@ async function connectGreenSplit() {
 }
 
 let wasConnected = false;
+let statedOnce = false;
 
 /* ------------------------------------------------------------------ LBCBot accounts */
 
@@ -493,21 +503,66 @@ const accountName = (row) => row.username || 'Your account';
 let accountState = { accounts: [], full: false, adding: null };
 let switchingTo = null;
 let removing = null;
-// The line under the card while no code is out: "Opening your browser…", or why an add failed (in red).
+let lbcOnline = false;
+// The line under Add account while no code is out: "Opening your browser…", or why an add failed (in red).
 let addNote = null;
 
+const menuOpen = () => !el('acct-menu').hidden;
+
+function setMenuOpen(open) {
+    el('acct-menu').hidden = !open;
+    el('acct-chip').setAttribute('aria-expanded', open ? 'true' : 'false');
+    el('acct').classList.toggle('is-open', open);
+}
+
 /**
- * The LBCBot card: each account on this computer (the one in use ticked; a click on another switches to it, on a
- * signed-out one signs in to it again), a remove per row, and Connect / Add account below. Drawn whole from the pushed
- * state, which never carries a credential.
+ * The sidebar's account chip: the account in use (its initial, name, and LBCBot's connection under it, the dot on the
+ * avatar). With none yet it reads "Not connected" and a click starts the sign-in straight away.
+ */
+function renderAccountChip() {
+    const { accounts, adding } = accountState;
+    const active = accounts.find((r) => r.active) || null;
+    const none = !accounts.length;
+    const name = active ? accountName(active) : 'LBCBot';
+
+    el('acct-name').textContent = name; // textContent: a username is user data
+    const initial = el('acct-initial');
+    if (none) initial.innerHTML = ICON.plus;
+    else initial.textContent = name.charAt(0).toUpperCase();
+    el('acct-avatar').className = `acct__avatar${none ? ' acct__avatar--none' : ''}${active && active.signedOut ? ' acct__avatar--out' : ''}`;
+
+    const sub = el('lbc-status');
+    let text;
+    let tone;
+    if (switchingTo) [text, tone] = ['Switching…', 'muted'];
+    else if (adding) [text, tone] = ['Approve the code', 'warn'];
+    else if (none) [text, tone] = ['Not connected', 'muted'];
+    else if (active && active.signedOut) [text, tone] = ['Signed out', 'muted'];
+    else [text, tone] = lbcOnline ? ['Online', 'on'] : ['Offline', 'muted'];
+    sub.textContent = text;
+    sub.className = `acct__sub acct__sub--${tone}`;
+    el('lbc-dot').className = `dot ${lbcOnline && !none ? 'dot--on' : 'dot--off'} acct__presence`;
+
+    const chip = el('acct-chip');
+    chip.title = none ? 'Connect this computer to your LBCBot account' : 'Switch or add accounts';
+}
+
+/**
+ * The account menu: each account on this computer (the one in use ticked; a click on another switches to it, on a
+ * signed-out one signs in to it again), a remove per row, then Add account and the code to approve. Drawn whole from
+ * the pushed state, which never carries a credential.
  */
 function renderAccounts() {
     const { accounts, full, adding } = accountState;
+    renderAccountChip();
+
     const list = el('lbc-accounts');
     list.replaceChildren();
     // A platform mark only says something when the accounts are on more than one platform (as on the website).
     const platforms = new Set(accounts.map((r) => r.platform).filter(Boolean));
-    accounts.forEach((row) => {
+    // The one in use first, so the menu opens with "who am I" on top and the others to switch to under it.
+    const ordered = [...accounts].sort((a, b) => (b.active ? 1 : 0) - (a.active ? 1 : 0));
+    ordered.forEach((row) => {
         const li = document.createElement('li');
         li.className = `account${row.active ? ' account--active' : ''}${row.signedOut ? ' account--out' : ''}`;
         const name = accountName(row);
@@ -515,7 +570,7 @@ function renderAccounts() {
         const main = document.createElement('button');
         main.type = 'button';
         main.className = 'account__main';
-        main.title = row.active ? `Using ${name}` : row.signedOut ? `Sign in to ${name} again` : `Switch to ${name}`;
+        main.title = row.active && !row.signedOut ? `Using ${name}` : row.signedOut ? `Sign in to ${name} again` : `Switch to ${name}`;
         if (row.active) main.setAttribute('aria-current', 'true');
         main.disabled = !!switchingTo || removing === row.id || (row.signedOut && !!adding);
 
@@ -530,7 +585,7 @@ function renderAccounts() {
         label.className = 'account__name';
         label.textContent = name; // textContent: a username is user data
         text.append(label);
-        const sub = row.signedOut ? 'Signed out. Click to sign in again.' : switchingTo === row.id ? 'Switching…' : null;
+        const sub = row.signedOut ? 'Signed out' : switchingTo === row.id ? 'Switching…' : null;
         if (sub) {
             const subEl = document.createElement('span');
             subEl.className = 'account__sub';
@@ -562,13 +617,17 @@ function renderAccounts() {
             }
             switchingTo = row.id;
             renderAccounts();
+            let ok = false;
             try {
                 const result = await window.lbcbot.switchAccount(row.id);
-                if (!result.ok && result.error) appendLog(result.error);
+                ok = !!(result && result.ok);
+                if (!ok && result && result.error) addNote = { text: result.error, bad: true };
             } catch (error) {
-                appendLog(`Switching failed: ${error.message}`);
+                addNote = { text: `Switching failed: ${error.message}`, bad: true };
             } finally {
                 switchingTo = null;
+                // Switched: the chip now shows who you are, so the menu has done its job.
+                if (ok) setMenuOpen(false);
                 renderAccounts();
             }
         });
@@ -599,28 +658,34 @@ function renderAccounts() {
     list.hidden = !accounts.length;
 
     const none = !accounts.length;
-    el('lbc-intro').hidden = !none;
     const add = el('lbc-add');
-    // None yet: the card's one filled button. After that, adding is the quieter outline next to the list.
-    add.className = none ? 'primary' : 'account-add';
-    add.innerHTML = none ? 'Connect' : `${ICON.plus}<span>Add account</span>`;
-    add.title = none ? '' : 'Sign in to another LBCBot account on this computer';
+    add.innerHTML = `${ICON.plus}<span>${none ? 'Connect an account' : 'Add account'}</span>`;
+    add.title = 'Sign in to another LBCBot account on this computer';
     add.disabled = !!adding;
     add.hidden = full && !adding;
     el('lbc-full').hidden = !(full && !adding);
 
-    const code = el('device-code');
+    // First run: the Settings pane's Connect card, until there is an account.
+    el('lbc-card').hidden = !none;
+    el('lbc-connect').disabled = !!adding;
+    renderCode(el('device-code'));
+    renderCode(el('lbc-card-code'));
+}
+
+// The code to approve (or the add's note), wherever the add was started from: the menu and the first-run card.
+function renderCode(node) {
+    const { adding } = accountState;
     if (adding) {
         // The code in bold: it is what you compare with the browser's page.
         const strong = document.createElement('strong');
         strong.className = 'device-code__code';
         strong.textContent = adding.userCode;
-        code.replaceChildren('Approve code ', strong, ` in your browser (it should have opened at ${adding.verificationUri}).`);
+        node.replaceChildren('Approve code ', strong, ` in your browser (it should have opened at ${adding.verificationUri}).`);
     } else {
-        code.textContent = (addNote && addNote.text) || '';
+        node.textContent = (addNote && addNote.text) || '';
     }
-    code.className = `hint${!adding && addNote && addNote.bad ? ' hint--bad' : ''}`;
-    code.hidden = !code.textContent;
+    node.classList.toggle('hint--bad', !adding && !!(addNote && addNote.bad));
+    node.hidden = !node.textContent;
 }
 
 async function startAdd() {
@@ -629,6 +694,32 @@ async function startAdd() {
     const result = await window.lbcbot.addAccount();
     addNote = result && result.ok ? null : { text: (result && result.error) || "Couldn't reach LBCBot. Try again.", bad: true };
     renderAccounts();
+}
+
+function wireAccountMenu() {
+    el('acct-chip').addEventListener('click', () => {
+        // No account yet: one click starts the sign-in, and the menu opens to show the code.
+        if (!accountState.accounts.length && !accountState.adding) {
+            setMenuOpen(true);
+            startAdd();
+            return;
+        }
+        if (!menuOpen()) addNote = null; // a stale note from last time doesn't greet you
+        setMenuOpen(!menuOpen());
+        renderAccounts();
+    });
+    el('lbc-add').addEventListener('click', startAdd);
+    el('lbc-connect').addEventListener('click', startAdd);
+    // Closes on a click outside it and on Esc, like every popover in the app.
+    document.addEventListener('mousedown', (event) => {
+        if (menuOpen() && !el('acct').contains(event.target)) setMenuOpen(false);
+    });
+    document.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape' && menuOpen()) {
+            setMenuOpen(false);
+            el('acct-chip').focus();
+        }
+    });
 }
 
 function applyState(state) {
@@ -652,6 +743,11 @@ function applyState(state) {
     }
     applyGreenSplitStatus(state.greensplit);
     // Coming online is when the account's lists first become readable, so read them then too.
+    // The first state: with no account yet, open on Settings, where Connect is.
+    if (!statedOnce && Array.isArray(state.accounts)) {
+        statedOnce = true;
+        if (!state.accounts.length) showPane('settings');
+    }
     const wasConnectedBefore = wasConnected;
     if (state.lbcbotConnected && !wasConnected) refreshAccountLists();
     wasConnected = !!state.lbcbotConnected;
@@ -811,10 +907,15 @@ async function refreshPlatforms() {
     });
     // The template editor's platform choice and the list's platform tags depend on what is linked.
     renderTemplateList();
-    if (!selectedTemplateId) showPlatformFields(editorPlatform(null), true);
 }
 
 /* ------------------------------------------------------------------ stream templates */
+
+/*
+ * Stream setup: the website's Stream Planner (templates half), in plain DOM. Every row has its own Apply; edits save
+ * themselves a moment after you stop typing; Delete is immediate and offers Undo. Everything is built with
+ * textContent and real elements — template names and categories are user data and this page has a strict CSP.
+ */
 
 /**
  * YouTube's video categories.
@@ -824,7 +925,7 @@ async function refreshPlatforms() {
  * blank entry means "leave whatever the broadcast already has".
  */
 const YT_CATEGORIES = [
-    ['', 'Leave unchanged'],
+    ['', 'Keep current'],
     ['20', 'Gaming'],
     ['24', 'Entertainment'],
     ['22', 'People & Blogs'],
@@ -835,166 +936,716 @@ const YT_CATEGORIES = [
     ['26', 'Howto & Style'],
     ['17', 'Sports'],
 ];
+const ytCategoryName = (id) => (YT_CATEGORIES.find(([key]) => key === String(id || '')) || [])[1] || '';
+
+/* The website's limits (templateFields.js), so a template that saves here also saves there. */
+const TWITCH_TITLE_MAX = 140;
+const YOUTUBE_TITLE_MAX = 100;
+const TWITCH_TAGS_MAX = 10;
+const TWITCH_TAG_LEN = 25;
+const YOUTUBE_TAGS_CHARS = 500;
+const SAVE_DELAY_MS = 600;
+const FLASH_MS = 2200;
+const UNDO_MS = 7000;
+
+// Static markup of our own (never user data), so innerHTML is safe for these.
+const TPL_ICON = {
+    play: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5.5v13a1 1 0 0 0 1.5.86l10.4-6.5a1 1 0 0 0 0-1.72L9.5 4.64A1 1 0 0 0 8 5.5z"/></svg>',
+    check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>',
+    cross: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>',
+    spin: '<span class="plan__spin" aria-hidden="true"></span>',
+    grid: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/></svg>',
+    plus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>',
+    x: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>',
+};
+
+/** Twitch box art at a size; null without a category id. */
+const boxArtUrl = (gameId, w, h) => (gameId ? `https://static-cdn.jtvnw.net/ttv-boxart/${encodeURIComponent(gameId)}-${w}x${h}.jpg` : null);
+
+const csvToList = (csv) => String(csv || '').split(',').map((v) => v.trim()).filter(Boolean);
+
+/** The one line under a template's name: what it sets, the same words as the website's list. */
+function summaryOf(t) {
+    if (t.platform === 'YOUTUBE') {
+        return [ytCategoryName(t.youtubeCategoryId), t.youtubeTitle].filter(Boolean).join(' · ');
+    }
+    const category = t.twitchCategory && t.twitchCategoryYear ? `${t.twitchCategory} (${t.twitchCategoryYear})` : t.twitchCategory;
+    return [category, t.twitchTitle].filter(Boolean).join(' · ');
+}
+
+/** The reason the server gave (a 400 is {"message"}), or a plain fallback. */
+function reasonOf(result, fallback) {
+    if (result && typeof result.error === 'string') {
+        try {
+            const parsed = JSON.parse(result.error);
+            if (parsed && parsed.message) return parsed.message;
+        } catch (_) { /* not JSON */ }
+        if (result.error === 'not_connected') return 'Connect LBCBot first.';
+    }
+    return fallback;
+}
 
 let templates = [];
-/** The template being edited; null means the editor holds an unsaved new one. */
+/** The template open in the editor; null shows the "pick or make one" state. */
 let selectedTemplateId = null;
-/**
- * One platform per template, as on the website: the editor shows only that platform's fields. A new template's
- * platform is picked in the editor (only offered when both are linked); an existing one keeps its own.
- */
 let linkedPlatforms = [];
-let newTemplatePlatform = null;
+/** Per-template Apply feedback: { state: 'busy' | 'ok' | 'error', message } — drawn on the row and the editor. */
+const applyStates = new Map();
+/** The editor's working copy, so autosave and the list read the same thing. */
+let draft = null;
+let saveTimer = null;
+let saving = Promise.resolve();
+let undoTimer = null;
+let undoTemplate = null;
 
-function editorPlatform(template) {
-    if (template && template.platform) return template.platform;
-    if (newTemplatePlatform && linkedPlatforms.includes(newTemplatePlatform)) return newTemplatePlatform;
-    return linkedPlatforms[0] || 'TWITCH';
+/* ---------- small DOM helpers */
+
+function tplEl(tag, className, text) {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text != null) node.textContent = text;
+    return node;
 }
 
-function showPlatformFields(platform, isNew) {
-    el('tpl-twitch').hidden = platform !== 'TWITCH';
-    el('tpl-youtube').hidden = platform !== 'YOUTUBE';
-    el('tpl-platform-row').hidden = !(isNew && linkedPlatforms.length > 1);
-    document.querySelectorAll('#tpl-platform button').forEach((b) => {
-        b.classList.toggle('is-active', b.dataset.platform === platform);
-    });
+function iconButton(className, title, icon) {
+    const button = tplEl('button', className);
+    button.type = 'button';
+    button.title = title;
+    button.setAttribute('aria-label', title);
+    button.innerHTML = icon;
+    return button;
 }
 
-function setTemplateStatus(message) {
-    el('template-status').textContent = message || '';
+/** A 56x32 slot: box art for a Twitch category, otherwise the platform's mark on a tile. */
+function thumbFor(t) {
+    const wrap = tplEl('span', 'plan__thumbwrap');
+    const slot = tplEl('span', 'plan__thumb');
+    const art = t.platform !== 'YOUTUBE' && boxArtUrl(t.twitchCategoryId, 48, 64);
+    if (art) {
+        slot.classList.add('is-art');
+        const img = document.createElement('img');
+        img.alt = '';
+        img.loading = 'lazy';
+        img.src = art;
+        // A blocked or missing picture falls back to the tile rather than a broken-image box.
+        img.addEventListener('error', () => {
+            slot.classList.remove('is-art');
+            slot.innerHTML = ICON[(t.platform || 'TWITCH').toLowerCase()] || TPL_ICON.grid;
+        });
+        slot.appendChild(img);
+    } else {
+        slot.classList.add(`is-${(t.platform || 'twitch').toLowerCase()}`);
+        slot.innerHTML = ICON[(t.platform || 'TWITCH').toLowerCase()] || TPL_ICON.grid;
+    }
+    wrap.appendChild(slot);
+    // With both platforms linked, a small badge says which one; with one, that would be noise.
+    if (linkedPlatforms.length > 1 && t.platform && art) {
+        const badge = tplEl('span', `plan__pfbadge plan__pfbadge--${t.platform.toLowerCase()}`);
+        badge.title = PLATFORM_LABELS[t.platform] || t.platform;
+        badge.innerHTML = ICON[t.platform.toLowerCase()] || '';
+        wrap.appendChild(badge);
+    }
+    return wrap;
 }
 
-/** Read the editor into the wire shape. Blank strings become null, which the server reads as "leave alone". */
-function readTemplateForm() {
-    const value = (id) => {
-        const raw = el(id).value.trim();
-        return raw === '' ? null : raw;
-    };
-    const current = templates.find((t) => t.streamTemplateId === selectedTemplateId);
-    return {
-        name: value('template-name') || 'Untitled',
-        platform: editorPlatform(current),
-        twitchTitle: value('tw-title'),
-        twitchCategory: value('tw-category'),
-        // Only meaningful while it matches the typed name — see onCategoryInput.
-        twitchCategoryId: el('tw-category').dataset.gameId || null,
-        twitchTags: value('tw-tags'),
-        youtubeTitle: value('yt-title'),
-        youtubeDescription: value('yt-description'),
-        youtubeCategoryId: value('yt-category'),
-        youtubeTags: value('yt-tags'),
-        youtubeLanguage: value('yt-language'),
-        // Never offered in the UI — see the hint in the pane.
-        youtubeMadeForKids: false,
-        youtubeSyntheticMedia: el('yt-synthetic').checked,
-    };
+/** Apply's square button (rows) or labelled pill (editor): play → spinner → tick or cross, then back. */
+function drawApply(button, id, labelled) {
+    const st = applyStates.get(id);
+    const state = st ? st.state : 'idle';
+    button.className = `plan__apply${labelled ? ' plan__apply--label' : ''} is-${state}`;
+    button.disabled = state === 'busy';
+    const icon = { idle: TPL_ICON.play, busy: TPL_ICON.spin, ok: TPL_ICON.check, error: TPL_ICON.cross }[state];
+    button.innerHTML = icon;
+    if (labelled) button.appendChild(tplEl('span', null, state === 'ok' ? 'Applied' : 'Apply'));
+    const word = { idle: 'Apply to your channel now', busy: 'Applying…', ok: 'Applied', error: 'Could not apply' }[state];
+    button.title = word;
+    button.setAttribute('aria-label', word);
 }
 
-function fillTemplateForm(template) {
-    const t = template || {};
-    el('template-name').value = t.name || '';
-    el('tw-title').value = t.twitchTitle || '';
-    el('tw-category').value = t.twitchCategory || '';
-    el('tw-category').dataset.gameId = t.twitchCategoryId || '';
-    el('tw-tags').value = t.twitchTags || '';
-    el('yt-title').value = t.youtubeTitle || '';
-    el('yt-description').value = t.youtubeDescription || '';
-    el('yt-category').value = t.youtubeCategoryId || '';
-    el('yt-tags').value = t.youtubeTags || '';
-    el('yt-language').value = t.youtubeLanguage || '';
-    el('yt-synthetic').checked = Boolean(t.youtubeSyntheticMedia);
-    el('template-editor-title').textContent = t.streamTemplateId ? (t.name || 'Template') : 'New template';
-    showPlatformFields(editorPlatform(template), !t.streamTemplateId);
-    // Apply and Delete are meaningless until the thing exists server-side.
-    el('template-apply').disabled = !t.streamTemplateId;
-    el('template-delete').disabled = !t.streamTemplateId;
-    setTemplateStatus('');
-}
+/* ---------- the list */
 
-function selectTemplate(id) {
-    selectedTemplateId = id;
-    fillTemplateForm(templates.find((t) => t.streamTemplateId === id));
-    renderTemplateList();
-}
-
-/** Built with textContent and real buttons — template names are user data and this page has a strict CSP. */
 function renderTemplateList() {
     const list = el('template-list');
     list.textContent = '';
+    const count = el('template-count');
+    count.hidden = templates.length === 0;
+    count.textContent = String(templates.length);
+
     if (!templates.length) {
-        const li = document.createElement('li');
-        li.className = 'muted';
-        li.textContent = 'No templates yet.';
+        // The website's ghost row: where the first template will go, and the way to make it.
+        const li = tplEl('li', 'plan__ghost');
+        const button = tplEl('button', 'plan__ghostbtn');
+        button.type = 'button';
+        const slot = tplEl('span', 'plan__ghostthumb');
+        slot.innerHTML = TPL_ICON.plus;
+        button.append(slot, tplEl('span', 'plan__ghostlabel', 'New template'));
+        button.addEventListener('click', (event) => onNewTemplate(event, button));
+        li.appendChild(button);
         list.appendChild(li);
         return;
     }
+
     templates.forEach((t) => {
-        const li = document.createElement('li');
-        const button = document.createElement('button');
-        button.type = 'button';
-        button.className = `template-row${t.streamTemplateId === selectedTemplateId ? ' is-active' : ''}`;
-        button.textContent = t.name || `Template ${t.streamTemplateId}`;
-        // With both platforms linked, each row says which one it is for; with one, that would be noise.
-        if (linkedPlatforms.length > 1 && t.platform) {
-            const tag = document.createElement('span');
-            tag.className = `tag tag--${t.platform.toLowerCase()}`;
-            tag.textContent = PLATFORM_LABELS[t.platform] || t.platform;
-            button.appendChild(tag);
+        const id = t.streamTemplateId;
+        const shown = id === selectedTemplateId && draft ? draft : t;
+        const li = tplEl('li', `plan__row${id === selectedTemplateId ? ' is-selected' : ''}`);
+        li.dataset.platform = (shown.platform || 'TWITCH').toLowerCase();
+
+        const main = tplEl('button', 'plan__rowmain');
+        main.type = 'button';
+        const text = tplEl('span', 'plan__rowtext');
+        text.appendChild(tplEl('span', 'plan__name', shown.name || 'Untitled'));
+        const st = applyStates.get(id);
+        if (st && st.state === 'error') {
+            text.appendChild(tplEl('span', 'plan__sub is-error', st.message));
+        } else {
+            text.appendChild(tplEl('span', 'plan__sub', summaryOf(shown) || 'Keeps everything as it is'));
         }
-        button.addEventListener('click', () => selectTemplate(t.streamTemplateId));
-        li.appendChild(button);
+        main.append(thumbFor(shown), text);
+        main.addEventListener('click', () => selectTemplate(id));
+
+        const apply = tplEl('button');
+        apply.type = 'button';
+        drawApply(apply, id, false);
+        apply.addEventListener('click', () => applyTemplate(id));
+
+        li.append(main, apply);
         list.appendChild(li);
     });
 }
 
+/* ---------- the editor */
+
+/** Which platform's fields the editor shows: the template's own (one platform per template, as on the website). */
+function editorPlatform(template) {
+    if (template && template.platform) return template.platform;
+    return linkedPlatforms[0] || 'TWITCH';
+}
+
+function setTemplateStatus(message) {
+    const node = el('template-status');
+    node.textContent = message || '';
+    node.hidden = !message;
+}
+
+function setSaveState(state, message) {
+    const node = el('template-save-state');
+    node.className = `plan__save${state ? ` is-${state}` : ''}`;
+    node.innerHTML = state === 'saved' ? TPL_ICON.check : state === 'error' ? TPL_ICON.cross : '';
+    node.title = { saving: 'Saving…', saved: 'Saved', error: message || 'Could not save' }[state] || '';
+    if (state === 'saved') {
+        setTimeout(() => {
+            if (node.classList.contains('is-saved')) setSaveState(null);
+        }, FLASH_MS);
+    }
+}
+
+function counter(id, used, max) {
+    const node = el(id);
+    node.textContent = `${used}/${max}`;
+    node.classList.toggle('is-over', used > max);
+}
+
+function updateCounters() {
+    if (!draft) return;
+    counter('tw-title-count', (draft.twitchTitle || '').length, TWITCH_TITLE_MAX);
+    counter('yt-title-count', (draft.youtubeTitle || '').length, YOUTUBE_TITLE_MAX);
+    counter('tw-tags-count', csvToList(draft.twitchTags).length, TWITCH_TAGS_MAX);
+    counter('yt-tags-count', csvToList(draft.youtubeTags).join(',').length, YOUTUBE_TAGS_CHARS);
+}
+
+function fillTemplateForm(template) {
+    draft = template ? { ...template } : null;
+    el('template-empty').hidden = !!draft;
+    el('template-edbody').hidden = !draft;
+    clearTimeout(saveTimer);
+    setSaveState(null);
+    setTemplateStatus('');
+    closeCategoryMenu();
+    if (!draft) return;
+
+    const platform = editorPlatform(draft);
+    el('tpl-twitch').hidden = platform !== 'TWITCH';
+    el('tpl-youtube').hidden = platform !== 'YOUTUBE';
+    const mark = el('template-platform');
+    mark.innerHTML = ICON[platform.toLowerCase()] || '';
+    mark.className = `plan__edplatform plan__edplatform--${platform.toLowerCase()}`;
+    mark.title = PLATFORM_LABELS[platform] || platform;
+    // One platform linked: no need to say which.
+    mark.hidden = linkedPlatforms.length < 2;
+
+    el('template-name').value = draft.name || '';
+    el('tw-title').value = draft.twitchTitle || '';
+    el('yt-title').value = draft.youtubeTitle || '';
+    el('yt-description').value = draft.youtubeDescription || '';
+    el('yt-category').value = draft.youtubeCategoryId || '';
+    el('yt-language').value = draft.youtubeLanguage || '';
+    el('yt-synthetic').checked = Boolean(draft.youtubeSyntheticMedia);
+    renderCategory();
+    twitchTags.render();
+    youtubeTags.render();
+    updateCounters();
+    drawApply(el('template-apply'), draft.streamTemplateId, true);
+}
+
+function selectTemplate(id) {
+    if (id === selectedTemplateId) return;
+    flushSave();
+    selectedTemplateId = id;
+    fillTemplateForm(templates.find((t) => t.streamTemplateId === id) || null);
+    renderTemplateList();
+}
+
+/* ---------- autosave */
+
+/** Blank strings become null, which the server reads as "keep what is on the channel". */
+const blankToNull = (v) => {
+    const s = v == null ? '' : String(v).trim();
+    return s === '' ? null : s;
+};
+
+/**
+ * The wire shape: the whole template as loaded, with the fields this page edits laid over it. Starting from the
+ * loaded template keeps what only the website edits (language, content labels, delay) instead of wiping it.
+ */
+function wireTemplate(t) {
+    return {
+        ...t,
+        name: blankToNull(t.name) || 'Untitled',
+        twitchTitle: blankToNull(t.twitchTitle),
+        twitchCategory: blankToNull(t.twitchCategory),
+        twitchCategoryId: blankToNull(t.twitchCategoryId),
+        twitchTags: blankToNull(t.twitchTags),
+        youtubeTitle: blankToNull(t.youtubeTitle),
+        youtubeDescription: blankToNull(t.youtubeDescription),
+        youtubeCategoryId: blankToNull(t.youtubeCategoryId),
+        youtubeTags: blankToNull(t.youtubeTags),
+        youtubeLanguage: blankToNull(t.youtubeLanguage),
+        // Never offered in the UI — see the hint in the pane.
+        youtubeMadeForKids: false,
+        youtubeSyntheticMedia: Boolean(t.youtubeSyntheticMedia),
+    };
+}
+
+/** An edit: kept in the draft, shown in the list at once, saved a moment after typing stops. */
+function editDraft(patch) {
+    if (!draft) return;
+    Object.assign(draft, patch);
+    updateCounters();
+    renderTemplateList();
+    clearTimeout(saveTimer);
+    setSaveState('saving');
+    saveTimer = setTimeout(flushSave, SAVE_DELAY_MS);
+}
+
+/** Save now if anything is waiting (switching template, leaving the pane, applying). Saves run one at a time. */
+function flushSave() {
+    if (!saveTimer || !draft) return saving;
+    clearTimeout(saveTimer);
+    saveTimer = null;
+    const snapshot = { ...draft };
+    const id = snapshot.streamTemplateId;
+    saving = saving.then(async () => {
+        const result = await window.lbcbot.saveStreamTemplate(id, wireTemplate(snapshot));
+        const stillOpen = draft && draft.streamTemplateId === id;
+        if (!result || !result.ok) {
+            if (stillOpen) setSaveState('error', reasonOf(result, 'Could not save — see Activity.'));
+            if (stillOpen) setTemplateStatus(reasonOf(result, 'Could not save — see Activity.'));
+            return;
+        }
+        const saved = result.data || snapshot;
+        templates = templates.map((t) => (t.streamTemplateId === id ? { ...t, ...saved } : t));
+        if (stillOpen) {
+            // Keep what was typed since this save left; take the server's copy for what it changes (cleaned tags).
+            if (!saveTimer) setSaveState('saved');
+            setTemplateStatus('');
+        }
+        renderTemplateList();
+    });
+    return saving;
+}
+
+/* ---------- category picker (Twitch) */
+
+let categoryTimer = null;
+let categoryResults = [];
+let categoryCursor = -1;
+let categorySeq = 0;
+
+function renderCategory() {
+    const picked = el('tw-category-picked');
+    const clear = el('tw-category-clear');
+    const search = el('tw-category-search');
+    const has = draft && draft.twitchCategory;
+    picked.hidden = !has;
+    clear.hidden = !has;
+    search.hidden = !!has;
+    el('tw-category').value = '';
+    picked.textContent = '';
+    if (!has) return;
+    const art = boxArtUrl(draft.twitchCategoryId, 36, 48);
+    const slot = tplEl('span', 'plan__catart');
+    if (art) {
+        const img = document.createElement('img');
+        img.alt = '';
+        img.src = art;
+        img.addEventListener('error', () => { slot.innerHTML = TPL_ICON.grid; });
+        slot.appendChild(img);
+    } else {
+        slot.innerHTML = TPL_ICON.grid;
+    }
+    const label = draft.twitchCategoryYear ? `${draft.twitchCategory} (${draft.twitchCategoryYear})` : draft.twitchCategory;
+    picked.append(slot, tplEl('span', 'plan__catname', label));
+    picked.title = 'Change the category';
+}
+
+function openCategorySearch() {
+    el('tw-category-picked').hidden = true;
+    el('tw-category-clear').hidden = true;
+    el('tw-category-search').hidden = false;
+    const input = el('tw-category');
+    input.value = '';
+    input.focus();
+}
+
+function closeCategoryMenu() {
+    const menu = el('tw-category-menu');
+    menu.hidden = true;
+    menu.textContent = '';
+    el('tw-category').setAttribute('aria-expanded', 'false');
+    categoryResults = [];
+    categoryCursor = -1;
+}
+
+function drawCategoryMenu(message) {
+    const menu = el('tw-category-menu');
+    menu.textContent = '';
+    if (message) {
+        menu.appendChild(tplEl('li', 'plan__catnote', message));
+    }
+    // Two categories with one name (Spyro 1998 vs 2018) can only be told apart by their pictures, so say "this one".
+    categoryResults.forEach((game, index) => {
+        const li = tplEl('li', `plan__catopt${index === categoryCursor ? ' is-cursor' : ''}`);
+        li.setAttribute('role', 'option');
+        const slot = tplEl('span', 'plan__catart plan__catart--big');
+        const url = game.box_art_url ? game.box_art_url.replace('{width}', '48').replace('{height}', '64') : boxArtUrl(game.id, 48, 64);
+        if (url) {
+            const img = document.createElement('img');
+            img.alt = '';
+            img.src = url;
+            slot.appendChild(img);
+        }
+        li.append(slot, tplEl('span', 'plan__catname', game.name));
+        // mousedown, not click: the input's blur would close the menu before a click lands.
+        li.addEventListener('mousedown', (event) => {
+            event.preventDefault();
+            pickCategory(game);
+        });
+        menu.appendChild(li);
+    });
+    menu.hidden = !message && !categoryResults.length;
+    el('tw-category').setAttribute('aria-expanded', String(!menu.hidden));
+}
+
+function pickCategory(game) {
+    closeCategoryMenu();
+    editDraft({ twitchCategory: game.name, twitchCategoryId: game.id, twitchCategoryYear: null });
+    renderCategory();
+}
+
+function onCategoryInput() {
+    const typed = el('tw-category').value.trim();
+    clearTimeout(categoryTimer);
+    if (typed.length < 2) {
+        el('tw-category-spin').hidden = true;
+        closeCategoryMenu();
+        return;
+    }
+    el('tw-category-spin').hidden = false;
+    const seq = ++categorySeq;
+    // Debounced: this is a Twitch API call per keystroke otherwise.
+    categoryTimer = setTimeout(async () => {
+        const results = await window.lbcbot.searchTwitchCategories(typed);
+        if (seq !== categorySeq) return; // a later keystroke owns the menu now
+        el('tw-category-spin').hidden = true;
+        categoryResults = (results || []).slice(0, 8);
+        categoryCursor = categoryResults.length ? 0 : -1;
+        drawCategoryMenu(categoryResults.length ? null : 'No matching category');
+    }, 300);
+}
+
+function onCategoryKey(event) {
+    const menu = el('tw-category-menu');
+    if (event.key === 'Escape') {
+        if (!menu.hidden) {
+            closeCategoryMenu();
+        } else if (draft && draft.twitchCategory) {
+            renderCategory();
+        }
+        return;
+    }
+    if (menu.hidden || !categoryResults.length) return;
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault();
+        const step = event.key === 'ArrowDown' ? 1 : -1;
+        categoryCursor = (categoryCursor + step + categoryResults.length) % categoryResults.length;
+        drawCategoryMenu(null);
+    } else if (event.key === 'Enter' && categoryCursor >= 0) {
+        event.preventDefault();
+        pickCategory(categoryResults[categoryCursor]);
+    }
+}
+
+/* ---------- tags as chips */
+
+/**
+ * One chip box per platform. Typing a comma or Enter turns the text into a chip; Backspace in an empty box removes
+ * the last; pasting "a, b, c" makes three. Twitch's rules are applied as you type (letters and numbers, 25 long,
+ * 10 at most), the same cleaning the website does.
+ */
+function tagBox({ boxId, field, clean, limitReached }) {
+    const box = el(boxId);
+    const input = tplEl('input', 'plan__taginput');
+    input.type = 'text';
+    input.id = `${boxId}-input`;
+    input.spellcheck = false;
+    input.autocomplete = 'off';
+
+    const list = () => csvToList(draft && draft[field]);
+    const save = (tags) => editDraft({ [field]: tags.join(', ') });
+
+    function add(raw) {
+        const tags = list();
+        raw.split(',').map(clean).filter(Boolean).forEach((tag) => {
+            if (limitReached(tags, tag)) return;
+            if (!tags.some((t) => t.toLowerCase() === tag.toLowerCase())) tags.push(tag);
+        });
+        save(tags);
+        input.value = '';
+        render();
+        input.focus();
+    }
+
+    function render() {
+        box.textContent = '';
+        list().forEach((tag, index) => {
+            const chip = tplEl('span', 'plan__chip');
+            chip.appendChild(tplEl('span', null, tag));
+            const remove = iconButton('plan__chipx', `Remove ${tag}`, TPL_ICON.x);
+            remove.addEventListener('click', () => {
+                const tags = list();
+                tags.splice(index, 1);
+                save(tags);
+                render();
+                input.focus();
+            });
+            chip.appendChild(remove);
+            box.appendChild(chip);
+        });
+        input.placeholder = list().length ? '' : 'Keep current tags';
+        box.appendChild(input);
+    }
+
+    input.addEventListener('keydown', (event) => {
+        if ((event.key === 'Enter' || event.key === ',') && input.value.trim()) {
+            event.preventDefault();
+            add(input.value);
+        } else if (event.key === 'Backspace' && !input.value && list().length) {
+            const tags = list();
+            tags.pop();
+            save(tags);
+            render();
+            input.focus();
+        }
+    });
+    input.addEventListener('paste', (event) => {
+        const text = (event.clipboardData || window.clipboardData).getData('text');
+        if (text && text.includes(',')) {
+            event.preventDefault();
+            add(text);
+        }
+    });
+    // A tag typed and left without a comma still counts.
+    input.addEventListener('blur', () => { if (input.value.trim()) add(input.value); });
+    box.addEventListener('mousedown', (event) => {
+        if (event.target === box) {
+            event.preventDefault();
+            input.focus();
+        }
+    });
+    return { render };
+}
+
+const twitchTags = tagBox({
+    boxId: 'tw-tags',
+    field: 'twitchTags',
+    clean: (raw) => raw.replace(/[^\p{L}\p{N}]/gu, '').slice(0, TWITCH_TAG_LEN),
+    limitReached: (tags) => tags.length >= TWITCH_TAGS_MAX,
+});
+const youtubeTags = tagBox({
+    boxId: 'yt-tags',
+    field: 'youtubeTags',
+    clean: (raw) => raw.trim().replace(/[<>]/g, ''),
+    limitReached: (tags, tag) => [...tags, tag].join(',').length > YOUTUBE_TAGS_CHARS,
+});
+
+/* ---------- actions */
+
+async function applyTemplate(id) {
+    const current = applyStates.get(id);
+    if (current && current.state === 'busy') return;
+    // Apply what is on screen, not what was last saved.
+    if (draft && draft.streamTemplateId === id) await flushSave();
+    applyStates.set(id, { state: 'busy' });
+    redrawApply(id);
+    const result = await window.lbcbot.applyStreamTemplate(id);
+    let next;
+    if (!result || !result.ok) {
+        next = { state: 'error', message: reasonOf(result, 'Could not apply — see Activity.') };
+    } else {
+        /*
+         * One platform per template, so one outcome matters; but read both, not an overall verdict, in case a legacy
+         * template still carries the two.
+         */
+        const outcomes = ['twitch', 'youtube'].map((p) => result.data && result.data[p]).filter((o) => o && o.attempted);
+        const failed = outcomes.filter((o) => !o.ok);
+        next = !outcomes.length
+            ? { state: 'error', message: 'Nothing in this template to apply.' }
+            : failed.length
+                ? { state: 'error', message: failed.map((o) => o.message).join(' ') }
+                : { state: 'ok' };
+    }
+    applyStates.set(id, next);
+    redrawApply(id);
+    if (next.state === 'ok') {
+        setTimeout(() => {
+            if ((applyStates.get(id) || {}).state === 'ok') {
+                applyStates.delete(id);
+                redrawApply(id);
+            }
+        }, FLASH_MS);
+    }
+}
+
+function redrawApply(id) {
+    renderTemplateList();
+    if (draft && draft.streamTemplateId === id) {
+        drawApply(el('template-apply'), id, true);
+        const st = applyStates.get(id);
+        setTemplateStatus(st && st.state === 'error' ? st.message : '');
+    }
+}
+
+async function createTemplate(body, focusName) {
+    const result = await window.lbcbot.saveStreamTemplate(null, body);
+    if (!result || !result.ok || !result.data) {
+        setTemplateStatus(reasonOf(result, 'Could not make the template — see Activity.'));
+        return null;
+    }
+    await refreshTemplates(result.data.streamTemplateId);
+    if (focusName) {
+        el('template-name').focus();
+        el('template-name').select();
+    }
+    return result.data;
+}
+
+/** New: one click with one platform linked; with two, a small menu picks which (as on the website). */
+function onNewTemplate(event, anchor) {
+    const menu = el('template-new-menu');
+    if (linkedPlatforms.length < 2) {
+        flushSave();
+        createTemplate({ name: 'New template', platform: linkedPlatforms[0] || 'TWITCH' }, true);
+        return;
+    }
+    if (!menu.hidden) {
+        menu.hidden = true;
+        return;
+    }
+    menu.textContent = '';
+    linkedPlatforms.forEach((platform) => {
+        const item = tplEl('button', `plan__menuitem plan__menuitem--${platform.toLowerCase()}`);
+        item.type = 'button';
+        item.setAttribute('role', 'menuitem');
+        item.innerHTML = ICON[platform.toLowerCase()] || '';
+        item.appendChild(tplEl('span', null, `${PLATFORM_LABELS[platform]} template`));
+        item.addEventListener('click', () => {
+            menu.hidden = true;
+            flushSave();
+            createTemplate({ name: 'New template', platform }, true);
+        });
+        menu.appendChild(item);
+    });
+    // Under whichever + was pressed: the header's, or the empty list's ghost row.
+    menu.classList.toggle('is-ghost', anchor !== el('template-new'));
+    menu.hidden = false;
+    event.stopPropagation();
+}
+
+async function duplicateTemplate() {
+    if (!draft) return;
+    await flushSave();
+    const copy = wireTemplate(draft);
+    delete copy.streamTemplateId;
+    delete copy.sortOrder;
+    copy.name = `${draft.name || 'Untitled'} (copy)`.slice(0, 80);
+    const made = await createTemplate(copy, false);
+    if (made) setSaveState('saved');
+}
+
+/** Delete at once, then offer Undo along the bottom — no confirm for something that can be put back. */
+async function deleteTemplate() {
+    if (!draft) return;
+    clearTimeout(saveTimer);
+    saveTimer = null;
+    const gone = { ...draft };
+    const result = await window.lbcbot.deleteStreamTemplate(gone.streamTemplateId);
+    if (!result || !result.ok) {
+        setTemplateStatus(reasonOf(result, 'Could not delete — see Activity.'));
+        return;
+    }
+    applyStates.delete(gone.streamTemplateId);
+    selectedTemplateId = null;
+    fillTemplateForm(null);
+    await refreshTemplates(null);
+    undoTemplate = gone;
+    el('template-snack-text').textContent = `Deleted “${gone.name || 'Untitled'}”`;
+    el('template-snack').hidden = false;
+    clearTimeout(undoTimer);
+    undoTimer = setTimeout(hideUndo, UNDO_MS);
+}
+
+function hideUndo() {
+    clearTimeout(undoTimer);
+    el('template-snack').hidden = true;
+    undoTemplate = null;
+}
+
+async function undoDelete() {
+    const gone = undoTemplate;
+    hideUndo();
+    if (!gone) return;
+    // Back where it was in the list: the old sort order goes with it.
+    const body = wireTemplate(gone);
+    delete body.streamTemplateId;
+    await createTemplate(body, false);
+}
+
 async function refreshTemplates(selectId) {
-    templates = (await window.lbcbot.getStreamTemplates()) || [];
+    const loaded = await window.lbcbot.getStreamTemplates();
+    templates = Array.isArray(loaded) ? loaded : [];
     if (selectId !== undefined) {
         selectedTemplateId = selectId;
     }
     if (selectedTemplateId && !templates.some((t) => t.streamTemplateId === selectedTemplateId)) {
         selectedTemplateId = null;
     }
-    renderTemplateList();
-    if (selectedTemplateId) {
-        fillTemplateForm(templates.find((t) => t.streamTemplateId === selectedTemplateId));
+    // A refresh while typing keeps what was typed: the draft is newer than the server's copy until it saves.
+    const keepDraft = saveTimer && draft && draft.streamTemplateId === selectedTemplateId;
+    if (!keepDraft) {
+        fillTemplateForm(templates.find((t) => t.streamTemplateId === selectedTemplateId) || null);
     }
-}
-
-/**
- * Twitch category typeahead.
- *
- * The id is what gets saved, so it is cleared on every keystroke and only re-set when the typed text matches a
- * suggestion exactly. Otherwise editing "Doom" into "Doom Eternal" would keep Doom's id and silently apply the
- * wrong game — the server can still resolve a bare name, so losing the id degrades to a lookup rather than an
- * error.
- */
-let categoryTimer = null;
-function onCategoryInput() {
-    const input = el('tw-category');
-    const options = el('tw-category-options');
-    const typed = input.value.trim();
-    const match = Array.from(options.options).find((o) => o.value.toLowerCase() === typed.toLowerCase());
-    input.dataset.gameId = match ? match.dataset.gameId : '';
-
-    if (categoryTimer) clearTimeout(categoryTimer);
-    if (typed.length < 2) return;
-    // Debounced: this is a Twitch API call per keystroke otherwise.
-    categoryTimer = setTimeout(async () => {
-        const results = await window.lbcbot.searchTwitchCategories(typed);
-        options.textContent = '';
-        (results || []).forEach((game) => {
-            const option = document.createElement('option');
-            option.value = game.name;
-            option.dataset.gameId = game.id;
-            options.appendChild(option);
-        });
-        // Re-check after results land: the user may have typed the full name before the search returned.
-        const now = input.value.trim().toLowerCase();
-        const fresh = Array.from(options.options).find((o) => o.value.toLowerCase() === now);
-        if (fresh) input.dataset.gameId = fresh.dataset.gameId;
-    }, 300);
+    renderTemplateList();
 }
 
 function wireTemplates() {
@@ -1006,71 +1657,55 @@ function wireTemplates() {
         ytCategory.appendChild(option);
     });
 
+    el('template-new').addEventListener('click', (event) => onNewTemplate(event, el('template-new')));
+    document.addEventListener('click', (event) => {
+        const menu = el('template-new-menu');
+        if (!menu.hidden && !menu.contains(event.target)) menu.hidden = true;
+    });
+    document.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape') el('template-new-menu').hidden = true;
+    });
+
+    el('template-name').addEventListener('input', (e) => editDraft({ name: e.target.value }));
+    el('tw-title').addEventListener('input', (e) => editDraft({ twitchTitle: e.target.value.replace(/\n/g, ' ') }));
+    el('yt-title').addEventListener('input', (e) => editDraft({ youtubeTitle: e.target.value.replace(/\n/g, ' ') }));
+    // A title is one line: Enter would put a newline in it, so it does nothing.
+    ['tw-title', 'yt-title', 'template-name'].forEach((id) => {
+        el(id).addEventListener('keydown', (e) => { if (e.key === 'Enter') e.preventDefault(); });
+    });
+    el('yt-description').addEventListener('input', (e) => editDraft({ youtubeDescription: e.target.value }));
+    el('yt-category').addEventListener('change', (e) => editDraft({ youtubeCategoryId: e.target.value }));
+    el('yt-language').addEventListener('input', (e) => editDraft({ youtubeLanguage: e.target.value }));
+    el('yt-synthetic').addEventListener('change', (e) => editDraft({ youtubeSyntheticMedia: e.target.checked }));
+
     el('tw-category').addEventListener('input', onCategoryInput);
-
-    document.querySelectorAll('#tpl-platform button').forEach((b) => {
-        b.addEventListener('click', () => {
-            newTemplatePlatform = b.dataset.platform;
-            showPlatformFields(newTemplatePlatform, true);
-        });
+    el('tw-category').addEventListener('keydown', onCategoryKey);
+    el('tw-category').addEventListener('blur', () => {
+        setTimeout(() => {
+            closeCategoryMenu();
+            el('tw-category-spin').hidden = true;
+            // Left without picking: show the category it already had.
+            if (draft && draft.twitchCategory) renderCategory();
+        }, 0);
+    });
+    el('tw-category-picked').addEventListener('click', openCategorySearch);
+    el('tw-category-clear').addEventListener('click', () => {
+        editDraft({ twitchCategory: null, twitchCategoryId: null, twitchCategoryYear: null });
+        renderCategory();
     });
 
-    el('template-new').addEventListener('click', () => {
-        selectedTemplateId = null;
-        fillTemplateForm(null);
-        renderTemplateList();
-        el('template-name').focus();
-    });
+    el('template-apply').addEventListener('click', () => { if (draft) applyTemplate(draft.streamTemplateId); });
+    el('template-duplicate').addEventListener('click', duplicateTemplate);
+    el('template-delete').addEventListener('click', deleteTemplate);
+    el('template-undo').addEventListener('click', undoDelete);
 
-    el('template-save').addEventListener('click', async () => {
-        setTemplateStatus('Saving…');
-        const result = await window.lbcbot.saveStreamTemplate(selectedTemplateId, readTemplateForm());
-        if (!result || !result.ok) {
-            setTemplateStatus('Could not save — see Activity.');
-            return;
-        }
-        await refreshTemplates(result.data.streamTemplateId);
-        setTemplateStatus('Saved.');
-    });
-
-    el('template-delete').addEventListener('click', async () => {
-        if (!selectedTemplateId) return;
-        const result = await window.lbcbot.deleteStreamTemplate(selectedTemplateId);
-        if (!result || !result.ok) {
-            setTemplateStatus('Could not delete — see Activity.');
-            return;
-        }
-        selectedTemplateId = null;
-        fillTemplateForm(null);
-        await refreshTemplates(null);
-    });
-
-    el('template-apply').addEventListener('click', async () => {
-        if (!selectedTemplateId) return;
-        const button = el('template-apply');
-        button.disabled = true;
-        setTemplateStatus('Applying…');
-        const result = await window.lbcbot.applyStreamTemplate(selectedTemplateId);
-        button.disabled = false;
-        if (!result || !result.ok) {
-            setTemplateStatus('Could not apply — see Activity.');
-            return;
-        }
-        /*
-         * Report both halves, not an overall verdict. They succeed and fail independently — "Twitch updated,
-         * YouTube skipped because you are not live" is the useful answer, and a single line saying "failed"
-         * would be wrong about the half that worked.
-         */
-        const parts = ['twitch', 'youtube']
-            .map((p) => result.data[p])
-            .filter((o) => o && o.attempted)
-            .map((o) => o.message);
-        setTemplateStatus(parts.length ? parts.join(' ') : 'Nothing in this template to apply.');
-    });
+    // Leaving the pane or the app saves what is waiting.
+    window.addEventListener('beforeunload', () => { flushSave(); });
+    document.querySelectorAll('.nav__item').forEach((b) => b.addEventListener('click', () => flushSave()));
 }
 
 function wire() {
-    el('lbc-add').addEventListener('click', startAdd);
+    wireAccountMenu();
     window.lbcbot.onAddAccountDone((outcome) => {
         addNote = outcome.ok ? null : { text: outcome.error, bad: true };
         renderAccounts();
