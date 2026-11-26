@@ -1044,7 +1044,7 @@ function buildServices() {
                 log(`Could not forward ${event.eventType}: ${result.error || result.status}`);
             }
         },
-        // Live stats for a dashboard that is watching, each tagged obsId + name + role. Not logged on failure: one
+        // Live stats for a dashboard that is watching, each tagged obsId + name + the connections list. Not logged on failure: one
         // every 2 s would bury the log, and the dashboard already says when none arrive.
         onStats: async (payload, options) => {
             if (store.hasCredential()) await lbcbot.postObsStats(payload, options);

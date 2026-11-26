@@ -18,6 +18,16 @@ class FakeBridge {
         this.connected = false;
         this.state = 'off';
         this.disconnected = false;
+        this.watches = [];
+        this.stops = 0;
+    }
+
+    watchStats(seconds) {
+        this.watches.push(seconds);
+    }
+
+    stopStats() {
+        this.stops += 1;
     }
 
     get status() {
@@ -50,7 +60,7 @@ class FakeBridge {
     }
 }
 
-function makeManager(list = [], { outcomes = {}, passwords = {} } = {}) {
+function makeManager(list = [], { outcomes = {}, passwords = {}, clock = { t: 1_000_000 } } = {}) {
     const saved = [];
     const secrets = new Map(Object.entries(passwords));
     const statuses = [];
@@ -78,8 +88,9 @@ function makeManager(list = [], { outcomes = {}, passwords = {} } = {}) {
         onObsEvent: (e) => events.push(e),
         onStats: (p) => stats.push(p),
         onLog: (line) => logs.push(line),
+        now: () => clock.t,
     });
-    return { manager, saved, secrets, statuses, events, stats, logs, bridges };
+    return { manager, saved, secrets, statuses, events, stats, logs, bridges, clock };
 }
 
 const here = { id: 'obs_aaaaaaaa', url: 'ws://127.0.0.1:4455', name: '', reported: '', local: true, enabled: true };
@@ -292,6 +303,32 @@ test('WATCH_STATS watches the OBS it names, else the first', () => {
     assert.deepEqual(bridges.map((b) => b.executed.length), [1, 0]);
     manager.execute(command({ type: 'WATCH_STATS', seconds: 60, obsId: there.id }));
     assert.deepEqual(bridges.map((b) => b.executed.length), [1, 1]);
+});
+
+test('a watch that named no OBS follows the first on a move or remove, for what it had left', async () => {
+    const { manager, bridges, clock } = makeManager([{ ...here }, { ...there }]);
+    manager.execute(command({ type: 'WATCH_STATS', seconds: 60 }));
+    clock.t += 20_000;
+    manager.move(there.id, -1);
+    assert.equal(bridges[0].stops, 1);
+    assert.deepEqual(bridges[1].watches, [40]);
+    clock.t += 10_000;
+    await manager.remove(there.id);
+    assert.deepEqual(bridges[0].watches, [30]);
+    clock.t += 31_000;
+    manager.move(here.id, 1); // one OBS left: nothing moves, and an ended watch is never restarted
+    assert.deepEqual(bridges[0].watches, [30]);
+});
+
+test('following the first never stops a watch a picker asked for by obsId', () => {
+    const { manager, bridges } = makeManager([{ ...here }, { ...there }]);
+    manager.execute(command({ type: 'WATCH_STATS', seconds: 60 }));
+    manager.execute(command({ type: 'WATCH_STATS', seconds: 60, obsId: here.id }));
+    manager.move(here.id, 1);
+    assert.equal(bridges[0].stops, 0);
+    assert.deepEqual(bridges[1].watches, [60]);
+    manager.move(there.id, 1); // and back again: the streaming PC had no watch of its own, so it stops
+    assert.deepEqual(bridges[0].watches, [60]);
 });
 
 test('with no OBS set up, WATCH_STATS is silent and nothing is logged for it', () => {

@@ -9,7 +9,7 @@
  * only ever needed one long-running local process to talk to.
  *
  * The OBS can be on another computer (2026-11-26): with NDI, the PC running this app is often the source and a second
- * PC runs the OBS that goes live. That is why the connection retries on its own (a LAN link drops and comes back, and
+ * PC runs the OBS that streams. That is why the connection retries on its own (a LAN link drops and comes back, and
  * the other PC's OBS may start after this app) and why this bridge can start and stop the stream.
  *
  * Both directions live in this file:

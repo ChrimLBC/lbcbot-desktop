@@ -114,7 +114,7 @@ class ObsConnections {
      * `store`: `{ list(), save(list), password(id), setPassword(id, value), deletePassword(id), settings() }`.
      * `makeBridge(conn, hooks)` builds one ObsBridge for a connection (index.js passes the real one; tests a fake).
      */
-    constructor({ store, makeBridge, onLog = () => {}, onStatus = () => {}, onObsEvent = () => {}, onStats = () => {}, makeId = newId }) {
+    constructor({ store, makeBridge, onLog = () => {}, onStatus = () => {}, onObsEvent = () => {}, onStats = () => {}, makeId = newId, now = Date.now }) {
         this.store = store;
         this.makeBridge = makeBridge;
         this.onLog = onLog;
@@ -122,6 +122,14 @@ class ObsConnections {
         this.onObsEvent = onObsEvent;
         this.onStats = onStats;
         this.makeId = makeId;
+        this.now = now;
+        /**
+         * The last WATCH_STATS that named no OBS (an older dashboard): which connection it went to and until when. When
+         * the first changes (a move, a remove) that watch follows it, so the dashboard never gets two OBS's samples
+         * at once. `watchedById` is each named watch's end, so following never stops a watch a picker asked for.
+         */
+        this.untaggedWatch = { id: null, until: 0 };
+        this.watchedById = new Map();
         /** id -> ObsBridge, for the saved connections only (an add being tried is not in here until it connects). */
         this.bridges = new Map();
         /** Adds being tried: id -> bridge, and the addresses they hold, so the same PC can't be added twice at once. */
@@ -299,10 +307,13 @@ class ObsConnections {
         const conn = this.conn(id);
         if (!conn) return false;
         const bridge = this.bridges.get(id);
+        const prevFirst = this.list[0] && this.list[0].id;
         this.bridges.delete(id);
         this.list = this.list.filter((c) => c.id !== id);
+        this.watchedById.delete(id);
         this.save();
         if (bridge && bridge.stopStats) bridge.stopStats();
+        this.followFirst(prevFirst);
         await this.store.deletePassword(id);
         if (bridge) await bridge.disconnect().catch(() => {});
         this.onLog(`Removed ${displayName(conn)}.`);
@@ -325,12 +336,28 @@ class ObsConnections {
         const from = this.list.findIndex((c) => c.id === id);
         const to = from + Math.sign(Number(delta) || 0);
         if (from < 0 || to < 0 || to >= this.list.length || to === from) return false;
+        const prevFirst = this.list[0].id;
         const list = [...this.list];
         [list[from], list[to]] = [list[to], list[from]];
         this.list = list;
         this.save();
+        this.followFirst(prevFirst);
         this.publish();
         return true;
+    }
+
+    /** The first was `prevId` and may not be now: a watch that named no OBS moves to the new first, for what it had left. */
+    followFirst(prevId) {
+        const next = this.list[0];
+        if (!next || next.id === prevId || this.untaggedWatch.id !== prevId) return;
+        const now = this.now();
+        const left = Math.ceil((this.untaggedWatch.until - now) / 1000);
+        this.untaggedWatch = { id: next.id, until: this.untaggedWatch.until };
+        if (left <= 0) return;
+        const prev = this.bridges.get(prevId);
+        if (prev && prev.stopStats && !((this.watchedById.get(prevId) || 0) > now)) prev.stopStats();
+        const bridge = this.bridges.get(next.id);
+        if (bridge && bridge.watchStats) bridge.watchStats(left);
     }
 
     /** Connect one (a password given here is saved for it first). Answers whether it connected. */
@@ -406,6 +433,12 @@ class ObsConnections {
                 this.onLog(obsId ? 'Ignored an OBS action for an OBS that is no longer set up here.' : 'Ignored an OBS action — no OBS set up.');
             }
             return undefined;
+        }
+        if (action && action.type === 'WATCH_STATS') {
+            const asked = Number(action.seconds);
+            const until = this.now() + Math.min(Number.isFinite(asked) && asked > 0 ? asked : 60, 120) * 1000;
+            if (obsId) this.watchedById.set(obsId, Math.max(this.watchedById.get(obsId) || 0, until));
+            else this.untaggedWatch = { id: this.list[0].id, until };
         }
         return bridge.execute(command);
     }

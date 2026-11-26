@@ -664,7 +664,10 @@ function toggleObsMenu(id, anchor) {
     const index = obs.conns.findIndex((c) => c.id === id);
     const move = (delta) => async () => {
         const list = [...obs.conns];
-        [list[index], list[index + delta]] = [list[index + delta], list[index]];
+        const from = list.findIndex((c) => c.id === id); // again: the list may have changed while the menu was open
+        const to = from + delta;
+        if (from < 0 || to < 0 || to >= list.length) return;
+        [list[from], list[to]] = [list[to], list[from]];
         obs.conns = list;
         renderObs();
         await window.lbcbot.moveObs(id, delta);
