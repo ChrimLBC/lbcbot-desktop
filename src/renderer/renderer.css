@@ -657,6 +657,7 @@ button:focus-visible { outline: 2px solid rgba(var(--accent-rgb), 0.6); outline-
 .obs-found__row.is-open .obs-found__go svg { transform: rotate(90deg); }
 .obs-found__row.is-added .obs-found__name { color: var(--muted); }
 .obs-found__row.is-added .obs-found__tag { color: var(--on); }
+.obs-found__why { padding: 0 6px 10px; }
 .obs-found__pw { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; padding: 2px 6px 10px; }
 
 .obs-link {

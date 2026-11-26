@@ -79,7 +79,9 @@ function migrateSettings(raw, makeId = newId) {
     if (!raw || Array.isArray(raw.obsConnections)) {
         return { settings: raw, changed: false };
     }
-    const url = typeof raw.obsUrl === 'string' && raw.obsUrl ? raw.obsUrl : `ws://127.0.0.1:${DEFAULT_PORT}`;
+    const typed = typeof raw.obsUrl === 'string' && raw.obsUrl ? raw.obsUrl : `ws://127.0.0.1:${DEFAULT_PORT}`;
+    // Stored the way add() and a scan spell it, so the same OBS is never listed twice ("ws://10.0.0.88" was valid).
+    const url = normalizeAddress(typed) || typed;
     const host = hostOf(url);
     const id = makeId();
     const conn = {
@@ -128,6 +130,11 @@ class ObsConnections {
         this.makeId = makeId;
         /** id -> ObsBridge, for the saved connections only (an add being tried is not in here until it connects). */
         this.bridges = new Map();
+        /** Adds being tried: id -> bridge, and the addresses they hold, so the same PC can't be added twice at once. */
+        this.trials = new Map();
+        this.adding = new Set();
+        /** Set once the API asks every connection for stats (it keeps them apart): until then only the live one posts. */
+        this.statsAll = false;
         this.list = withOneLive(store.list() || [], null);
         this.list.forEach((conn) => this.bridges.set(conn.id, this.bridgeFor(conn)));
     }
@@ -157,13 +164,17 @@ class ObsConnections {
                 if (this.bridges.get(id) === bridge) this.publish();
             },
             onObsEvent: (event) => {
-                if (this.bridges.get(id) !== bridge) return undefined;
                 const current = this.conn(id);
+                // Only the OBS that goes live fires triggers: the API doesn't yet tell PCs apart by obsId, so a scene
+                // change on the source PC would fire "scene changed" alerts as if the stream had changed
+                // (HANDOFF-obs-multi step 2 lifts this once the API filters on obsId).
+                if (!current || this.bridges.get(id) !== bridge || !current.live) return undefined;
                 return this.onObsEvent({ ...event, obsId: id, obsName: displayName(current) });
             },
             onStats: (payload, options) => {
                 const current = this.conn(id);
                 if (!current || this.bridges.get(id) !== bridge) return undefined;
+                if (!current.live && !this.statsAll) return undefined;
                 return this.onStats({ ...payload, obsId: id, name: displayName(current), role: current.live ? 'live' : 'other' }, options);
             },
             onLog: (line) => this.onLog(this.list.length > 1 ? `${displayName(this.conn(id) || conn)}: ${line}` : line),
@@ -217,7 +228,19 @@ class ObsConnections {
     }
 
     async disconnectAll() {
-        await Promise.all([...this.bridges.values()].map((b) => b.disconnect().catch(() => {})));
+        await Promise.all([...this.bridges.values(), ...this.trials.values()].map((b) => b.disconnect().catch(() => {})));
+    }
+
+    /**
+     * The "goes live" role moved from `prev` (a bridge): a dashboard watching stats keeps watching the new one, and the
+     * old one stops at once, so an API that doesn't keep connections apart never gets two OBS's samples interleaved.
+     */
+    moveStatsLease(prev) {
+        const next = this.live;
+        if (this.statsAll || !prev || prev === next || !prev.watched) return;
+        const left = Math.ceil((prev.leaseUntil - prev.now()) / 1000);
+        prev.stopStats();
+        if (next && left > 0) next.watchStats(left);
     }
 
     /**
@@ -237,6 +260,19 @@ class ObsConnections {
         if (existing) {
             return { ok: false, error: `${displayName(existing)} is already added.` };
         }
+        const key = isLocal ? `local:${portOf(address)}` : address;
+        if (this.adding.has(key)) {
+            return { ok: false, error: `Already connecting to ${host}.` };
+        }
+        this.adding.add(key);
+        try {
+            return await this.tryAdd({ address, host, isLocal, reported, password });
+        } finally {
+            this.adding.delete(key);
+        }
+    }
+
+    async tryAdd({ address, host, isLocal, reported, password }) {
         const conn = {
             id: this.makeId(),
             url: address,
@@ -246,15 +282,15 @@ class ObsConnections {
             live: false,
             enabled: true,
         };
-        while (this.conn(conn.id)) conn.id = this.makeId();
+        while (this.conn(conn.id) || this.trials.has(conn.id)) conn.id = this.makeId();
         if (password) await this.store.setPassword(conn.id, password);
-        // Tried outside the list: its status is not published until it is in.
+        // Tried outside the list: until it is in, its status, events and stats go nowhere and commands don't reach it.
         const trial = this.bridgeFor(conn);
-        this.bridges.set(conn.id, trial);
+        this.trials.set(conn.id, trial);
         const ok = await trial.connect();
+        this.trials.delete(conn.id);
         if (!ok) {
             const { state, error } = trial.status;
-            this.bridges.delete(conn.id);
             await trial.disconnect().catch(() => {});
             await this.store.deletePassword(conn.id);
             if (state === 'needs-password') {
@@ -266,8 +302,11 @@ class ObsConnections {
             return { ok: false, error: error || `Can't reach OBS at ${host}.` };
         }
         const live = takesLive(this.list, conn);
+        const prev = this.live;
+        this.bridges.set(conn.id, trial);
         this.list = [...this.list.map((c) => (live ? { ...c, live: false } : c)), { ...conn, live }];
         this.save();
+        this.moveStatsLease(prev);
         this.onLog(`Added ${displayName(conn)}${live ? ', the OBS that goes live' : ''}.`);
         this.publish();
         return { ok: true, id: conn.id };
@@ -281,6 +320,7 @@ class ObsConnections {
         this.bridges.delete(id);
         this.list = this.list.filter((c) => c.id !== id);
         this.save();
+        if (conn.live) this.moveStatsLease(bridge);
         await this.store.deletePassword(id);
         if (bridge) await bridge.disconnect().catch(() => {});
         this.onLog(`Removed ${displayName(conn)}.`);
@@ -300,8 +340,10 @@ class ObsConnections {
 
     setLive(id) {
         if (!this.conn(id)) return false;
+        const prev = this.live;
         this.list = withOneLive(this.list, id);
         this.store.save(this.list);
+        this.moveStatsLease(prev);
         this.publish();
         return true;
     }
@@ -374,8 +416,11 @@ class ObsConnections {
             return undefined;
         }
         if (action && action.type === 'WATCH_STATS' && action.all === true && !obsId) {
+            this.statsAll = true;
             return Promise.all([...this.bridges.values()].map((b) => b.execute(command)));
         }
+        // An API that names the OBS it wants stats from keeps each one's samples apart.
+        if (obsId && action && action.type === 'WATCH_STATS') this.statsAll = true;
         const bridge = obsId ? this.bridges.get(obsId) : this.live;
         if (!bridge) {
             // No OBS set up here (the app on a second PC) stays silent for WATCH_STATS, as before.

@@ -127,6 +127,11 @@ test('the one OBS from before becomes connection #1, goes live, and keeps its na
     assert.deepEqual(settings.obsPassword, { encrypted: 'BLOB' });
 });
 
+test('a migrated address is spelled the way a scan spells it, so it shows as already added', () => {
+    const { settings } = migrateSettings({ obsUrl: 'ws://10.0.0.88' }, () => 'obs_00000001');
+    assert.equal(settings.obsConnections[0].url, 'ws://10.0.0.88:4455');
+});
+
 test('migration runs once: a list already there is left alone', () => {
     const raw = { obsUrl: 'ws://10.0.0.1:4455', obsConnections: [] };
     const { settings, changed } = migrateSettings(raw);
@@ -303,23 +308,60 @@ test('setStreaming with no id starts the one that goes live', async () => {
 
 // ------------------------------------------------------------------ events and stats tagging
 
-test('OBS events from every connection are tagged with its id and name', () => {
+test('only the OBS that goes live fires triggers, tagged with its id and name', () => {
     const { manager, bridges, events } = makeManager([{ ...here }, { ...there }]);
     bridges[0].hooks.onObsEvent({ eventType: 'OBS_SCENE_CHANGED', sceneName: 'Game' });
+    bridges[1].hooks.onObsEvent({ eventType: 'OBS_SCENE_CHANGED', sceneName: 'BRB' });
+    assert.deepEqual(events, [{ eventType: 'OBS_SCENE_CHANGED', sceneName: 'Game', obsId: here.id, obsName: 'This PC' }]);
+    manager.setLive(there.id);
+    bridges[0].hooks.onObsEvent({ eventType: 'OBS_SCENE_CHANGED', sceneName: 'Game' });
     bridges[1].hooks.onObsEvent({ eventType: 'OBS_STREAM_STARTED' });
-    assert.deepEqual(events, [
-        { eventType: 'OBS_SCENE_CHANGED', sceneName: 'Game', obsId: here.id, obsName: 'This PC' },
-        { eventType: 'OBS_STREAM_STARTED', obsId: there.id, obsName: 'Streaming PC' },
-    ]);
-    assert.ok(manager);
+    assert.deepEqual(events.slice(1), [{ eventType: 'OBS_STREAM_STARTED', obsId: there.id, obsName: 'Streaming PC' }]);
 });
 
-test('stats carry obsId, the app\'s name and the role', () => {
+test('stats carry obsId, the app\'s name and the role; another OBS posts only once the API asks every one', () => {
     const { manager, bridges, stats } = makeManager([{ ...here, live: false }, { ...there, live: true }]);
     bridges[1].hooks.onStats({ connected: true, host: '10.0.0.88', name: '', sampledAt: 1 });
     bridges[0].hooks.onStats({ connected: true, host: '127.0.0.1', name: '', sampledAt: 2 });
+    assert.deepEqual(stats.map((s) => [s.obsId, s.role]), [[there.id, 'live']]);
+    manager.execute({ action: JSON.stringify({ type: 'WATCH_STATS', all: true }) });
+    bridges[0].hooks.onStats({ connected: true, host: '127.0.0.1', name: '', sampledAt: 3 });
     assert.deepEqual(stats.map((s) => [s.obsId, s.name, s.role]), [[there.id, 'Streaming PC', 'live'], [here.id, 'This PC', 'other']]);
-    assert.ok(manager);
+});
+
+test('when the role moves, a dashboard watching stats moves with it and the old OBS stops at once', () => {
+    const { manager, bridges } = makeManager([{ ...here }, { ...there, live: false }]);
+    let clock = 1000;
+    bridges.forEach((b) => {
+        b.leaseUntil = 0;
+        b.now = () => clock;
+        Object.defineProperty(b, 'watched', { get: () => clock < b.leaseUntil });
+        b.stopStats = () => { b.leaseUntil = 0; };
+        b.watchStats = (seconds) => { b.leaseUntil = clock + seconds * 1000; };
+    });
+    bridges[0].watchStats(90);
+    clock += 30000;
+    manager.setLive(there.id);
+    assert.equal(bridges[0].watched, false);
+    assert.equal(bridges[1].leaseUntil, clock + 60000);
+});
+
+test('the same PC added twice at once is tried once', async () => {
+    const { manager, saved } = makeManager([]);
+    const [a, b] = await Promise.all([manager.add({ url: '10.0.0.88' }), manager.add({ url: '10.0.0.88:4455' })]);
+    assert.equal(a.ok, true);
+    assert.equal(b.ok, false);
+    assert.equal(saved.at(-1).length, 1);
+});
+
+test('a PC still being tried fires no triggers and gets no commands', async () => {
+    const { manager, bridges, events } = makeManager([]);
+    const pending = manager.add({ url: '10.0.0.88' });
+    bridges[0].hooks.onObsEvent({ eventType: 'OBS_SCENE_CHANGED' });
+    manager.execute({ action: JSON.stringify({ type: 'WATCH_STATS', all: true }) });
+    assert.equal(events.length, 0);
+    assert.equal(bridges[0].executed.length, 0);
+    await pending;
 });
 
 test('a removed connection\'s bridge can no longer post events, stats or status', async () => {

@@ -182,6 +182,9 @@ const obs = {
     rowMsg: new Map(), // id -> an error for that row (a Start that failed)
     drafts: new Map(), // id -> a password being typed into that row, kept across redraws
     renaming: null,
+    renameDraft: null, // what's typed in the rename field, kept across redraws
+    renameSelect: false, // select the name once, when a rename starts
+    redrawing: false,
     ticker: null,
     // The add panel.
     panel: false,
@@ -337,7 +340,8 @@ function rowHead(conn) {
         input.className = 'obs-rename';
         input.maxLength = 40;
         input.spellcheck = false;
-        input.value = conn.displayName;
+        input.value = obs.renameDraft != null ? obs.renameDraft : conn.displayName;
+        input.addEventListener('input', () => { obs.renameDraft = input.value; });
         input.setAttribute('aria-label', 'Name for this OBS');
         input.dataset.focusKey = `rename:${conn.id}`;
         let done = false;
@@ -345,6 +349,7 @@ function rowHead(conn) {
             if (done) return;
             done = true;
             obs.renaming = null;
+            obs.renameDraft = null;
             const name = input.value.trim();
             if (save && name !== conn.displayName) {
                 // An empty name, or "This PC" on this PC, goes back to the default.
@@ -361,7 +366,8 @@ function rowHead(conn) {
             if (event.key === 'Enter') finish(true);
             if (event.key === 'Escape') { event.stopPropagation(); finish(false); }
         });
-        input.addEventListener('blur', () => finish(true));
+        // A redraw replaces the field (status pushes, countdown ticks): that isn't the user leaving it.
+        input.addEventListener('blur', () => { if (!obs.redrawing) finish(true); });
         head.appendChild(input);
     } else {
         const name = document.createElement('span');
@@ -468,12 +474,20 @@ function focusKey(key, select = false) {
 function renderObs() {
     const active = document.activeElement && document.activeElement.dataset ? document.activeElement.dataset.focusKey : null;
     const list = el('obs-list');
-    list.replaceChildren(...obs.conns.map(obsRow));
+    obs.redrawing = true;
+    try {
+        list.replaceChildren(...obs.conns.map(obsRow));
+    } finally {
+        obs.redrawing = false;
+    }
     el('obs-empty').hidden = !obs.known || obs.conns.length > 0;
     el('obs-add').hidden = obs.panel;
     renderObsPanel();
     if (active) focusKey(active);
-    if (obs.renaming) focusKey(`rename:${obs.renaming}`, true);
+    if (obs.renaming) {
+        focusKey(`rename:${obs.renaming}`, obs.renameSelect);
+        obs.renameSelect = false;
+    }
     tickObs();
 }
 
@@ -496,6 +510,12 @@ function applyObsStatus(status) {
     if (!status || !Array.isArray(status.connections)) return;
     const first = !obs.known;
     obs.known = true;
+    // A Start's error goes once that OBS's connection or stream changes (started from OBS itself, or dropped).
+    for (const next of status.connections) {
+        const prev = obsConn(next.id);
+        const was = prev && `${prev.state}/${prev.stream && prev.stream.state}`;
+        if (was && was !== `${next.state}/${next.stream && next.stream.state}`) obs.rowMsg.delete(next.id);
+    }
     obs.conns = status.connections;
     // A stop or a remove waiting on a connection that has gone (or dropped) has nothing to act on.
     for (const id of [...obs.stops.keys()]) {
@@ -513,6 +533,8 @@ function applyObsStatus(status) {
 function startObsRename(id) {
     closeObsMenu();
     obs.renaming = id;
+    obs.renameDraft = null;
+    obs.renameSelect = true;
     renderObs();
 }
 
@@ -743,6 +765,13 @@ function foundRow(row) {
     });
     li.appendChild(main);
 
+    if (!open && obs.foundMsg && obs.foundMsg.host === row.host) {
+        // Couldn't reach it (no password involved): the reason under the row, no password field.
+        const msg = document.createElement('p');
+        msg.className = 'hint hint--bad obs-found__msg obs-found__why';
+        msg.textContent = obs.foundMsg.text;
+        li.appendChild(msg);
+    }
     if (open) {
         const form = document.createElement('form');
         form.className = 'obs-found__pw';
@@ -802,9 +831,8 @@ async function addFoundObs(row, password) {
         obs.expanded = row.host;
     }
     obs.foundMsg = { host: row.host, text: (result && result.error) || 'Could not connect.' };
-    if (!obs.expanded) obs.expanded = row.host;
     renderObsPanel();
-    focusKey(`foundpw:${row.host}`, true);
+    if (obs.expanded === row.host) focusKey(`foundpw:${row.host}`, true);
 }
 
 async function scanObs() {
