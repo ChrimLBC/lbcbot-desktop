@@ -535,8 +535,8 @@ class LbcBot {
      * One live stats sample of the OBS this app drives (obs.js sampleStats), sent every 2 s only while a dashboard
      * watches. The API rebuilds it field by field and passes it to that dashboard; it keeps nothing.
      */
-    postObsStats(payload) {
-        return this.request('POST', '/users/obs/stats', payload);
+    postObsStats(payload, { timeoutMs = 5000 } = {}) {
+        return this.request('POST', '/users/obs/stats', payload, { signal: AbortSignal.timeout(timeoutMs) });
     }
 
     /** One GreenSplit trigger — the body is built by greensplit.js's mapping, one trigger type per post. */

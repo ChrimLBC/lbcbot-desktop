@@ -357,8 +357,8 @@ test('a state change within a second of the last post waits for the API\'s floor
     await fire();
     tick(300);
     bridge.applyStreamState('OBS_WEBSOCKET_OUTPUT_STOPPING');
-    assert.equal(timers[timers.length - 1].ms, 700);
-    tick(700);
+    assert.equal(timers[timers.length - 1].ms, 900, '1.2 s after the last post finished');
+    tick(900);
     await fire();
     assert.equal(posts.length, 2);
     assert.equal(posts[1].stream.state, 'stopping');
@@ -371,6 +371,7 @@ test('a state change within a second of the last post waits for the API\'s floor
 test('a watch with OBS not connected posts connected: false and nothing else', async () => {
     const { bridge, posts, fire, client } = await statsBridge({ connect: false });
     bridge.url = 'ws://10.0.0.88:4455';
+    bridge.wanted = true; // set up, still retrying
     await bridge.execute(watch(60));
     await fire();
     assert.deepEqual(posts, [{ connected: false, host: '10.0.0.88', name: 'Streaming PC', sampledAt: 1_000_000 }]);
@@ -393,4 +394,77 @@ test('WATCH_STATS is never logged and never reaches OBS as an action', async () 
     await bridge.execute(watch(60));
     assert.deepEqual(logs, []);
     assert.equal(client.calls.length, before);
+});
+
+test('a desktop with no OBS set up ignores WATCH_STATS (the app on a second PC stays silent)', async () => {
+    const { bridge, posts, timers } = await statsBridge({ connect: false });
+    await bridge.execute(watch(60));
+    assert.equal(timers.length, 0);
+    assert.equal(bridge.watched, false);
+    assert.equal(posts.length, 0);
+});
+
+test('a failed GetStreamStatus keeps the stream state and the bitrate baseline', async () => {
+    const { bridge, client, posts, fire, tick } = await statsBridge();
+    bridge.applyStreamState('OBS_WEBSOCKET_OUTPUT_STARTED');
+    await bridge.execute(watch(60));
+    client.responses.GetStreamStatus.outputBytes = 1_000_000;
+    await fire();
+    tick(2000);
+    const ok = client.responses.GetStreamStatus;
+    client.responses.GetStreamStatus = new Error('busy');
+    await fire();
+    assert.deepEqual(posts[1].stream, { state: 'live', uptimeMs: null });
+    assert.equal(posts[1].bitrateKbps, null);
+    assert.equal(posts[1].congestion, null);
+    assert.equal(posts[1].dropped.network, null);
+    tick(2000);
+    client.responses.GetStreamStatus = { ...ok, outputBytes: 4_000_000 }; // 3 MB over the 4 s since the last read
+    await fire();
+    assert.equal(posts[2].bitrateKbps, 6000);
+});
+
+test('a sample that throws or a post that fails does not end the watch', async () => {
+    const { bridge, fire, timers, tick } = await statsBridge();
+    let calls = 0;
+    bridge.onStats = () => { calls += 1; return Promise.reject(new Error('offline')); };
+    await bridge.execute(watch(60));
+    await fire();
+    assert.equal(timers[timers.length - 1].ms, 2000);
+    bridge.name = () => { throw new Error('settings unreadable'); };
+    tick(2000);
+    await fire();
+    assert.equal(timers[timers.length - 1].ms, 2000, 'still scheduled');
+    assert.equal(calls, 1);
+});
+
+test('a change while a sample is in flight is sent as soon as that one finishes', async () => {
+    const { bridge, posts, fire, timers, tick } = await statsBridge();
+    let release;
+    bridge.onStats = (p) => { posts.push(p); return posts.length === 1 ? new Promise((r) => { release = r; }) : undefined; };
+    await bridge.execute(watch(60));
+    const first = fire();
+    await new Promise((r) => setImmediate(r));
+    bridge.applyStreamState('OBS_WEBSOCKET_OUTPUT_STARTED');
+    await timers[timers.length - 1].fn(); // the change's tick finds a sample in flight
+    tick(100);
+    release();
+    await first;
+    assert.equal(timers[timers.length - 1].ms, 1200, 'again at once, held only by the floor');
+    await fire();
+    assert.equal(posts.length, 2);
+    assert.equal(posts[1].stream.state, 'live');
+});
+
+test('switching OBS reads the frame rate of the new one', async () => {
+    const { bridge, client, posts, fire, tick } = await statsBridge();
+    await bridge.execute(watch(60));
+    await fire();
+    assert.equal(posts[0].fps, 59.94);
+    client.responses.GetVideoSettings = { fpsNumerator: 30, fpsDenominator: 1 };
+    client.emit('ConnectionClosed');
+    await bridge.connect();
+    tick(2000);
+    await fire();
+    assert.equal(posts[posts.length - 1].fps, 30);
 });

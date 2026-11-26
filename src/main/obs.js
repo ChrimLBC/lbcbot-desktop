@@ -28,8 +28,13 @@ const OUTPUT_NOT_RUNNING = 501;
 const STATS_EVERY_MS = 2000;
 const WATCH_MAX_SECONDS = 120;
 const WATCH_DEFAULT_SECONDS = 60;
-/** The API drops a stats post under 1 s after the last one, so an extra post (a state change) waits that out. */
-const STATS_FLOOR_MS = 1000;
+/**
+ * The API drops a stats post under 1 s after the last one it took, so an extra post (a state change) waits that out,
+ * counted from when the last post finished and with a margin for the network (the two can travel at different speeds).
+ */
+const STATS_GAP_MS = 1200;
+/** A stats post that hangs gives up after this, so it can't stall the sampler. */
+const STATS_POST_TIMEOUT_MS = 5000;
 
 /** The wait before retry number `attempt` (0-based): 1 s, 2 s, 4 s … capped at 30 s. */
 function retryDelay(attempt, min = RETRY_MIN_MS, max = RETRY_MAX_MS) {
@@ -90,6 +95,8 @@ class ObsBridge {
         this.tickTimer = null;
         this.lastStatsAt = 0;
         this.sampling = false;
+        /** A tick came while a sample was in flight: send again as soon as it's done, so a change isn't 2 s late. */
+        this.statsDirty = false;
         /** The previous sample's outputBytes and when it was read, for the bitrate; null until there is one. */
         this.lastBytes = null;
         /** OBS's configured frame rate (GetVideoSettings), read once per connection. */
@@ -183,6 +190,7 @@ class ObsBridge {
             await this.obs.disconnect().catch(() => {});
             return false;
         }
+        this.videoFps = null; // another OBS may run at another rate
         this.connected = true;
         this.state = 'connected';
         this.error = null;
@@ -191,7 +199,6 @@ class ObsBridge {
         const scene = await this.obs.call('GetCurrentProgramScene').catch(() => null);
         this.currentScene = scene ? scene.sceneName || scene.currentProgramSceneName : null;
         await this.readStreamStatus();
-        this.videoFps = null;
         this.onLog(`Connected to OBS at ${obsUrl}.`);
         this.publish();
         this.statsChanged();
@@ -229,6 +236,7 @@ class ObsBridge {
         this.state = 'off';
         this.error = null;
         this.stream = { state: 'off', startedAt: null };
+        this.videoFps = null;
         this.clearRevertTimers();
         this.publish();
         this.statsChanged();
@@ -309,6 +317,7 @@ class ObsBridge {
             if (this.connected) {
                 this.connected = false;
                 this.stream = { state: 'off', startedAt: null };
+                this.videoFps = null;
                 this.clearRevertTimers();
                 this.statsChanged();
                 if (this.wanted) {
@@ -376,6 +385,11 @@ class ObsBridge {
      * watch sends the first sample at once, so the widget paints in under a second; a renewal only extends it.
      */
     watchStats(seconds) {
+        // A desktop with no OBS set up stays silent: with the app on two PCs, only the one driving OBS answers, and
+        // the dashboard never sees the other's "not connected" in between.
+        if (!this.wanted && !this.connected) {
+            return;
+        }
         const asked = Number(seconds);
         const span = Math.min(Number.isFinite(asked) && asked > 0 ? asked : WATCH_DEFAULT_SECONDS, WATCH_MAX_SECONDS);
         const wasWatched = this.watched;
@@ -397,7 +411,7 @@ class ObsBridge {
         if (this.tickTimer) {
             this.clearTimer(this.tickTimer);
         }
-        const floor = this.lastStatsAt ? this.lastStatsAt + STATS_FLOOR_MS - this.now() : 0;
+        const floor = this.lastStatsAt ? this.lastStatsAt + STATS_GAP_MS - this.now() : 0;
         const seq = ++this.tickSeq;
         this.tickTimer = this.setTimer(() => {
             if (seq !== this.tickSeq) return;
@@ -411,18 +425,24 @@ class ObsBridge {
             this.stopStats();
             return;
         }
-        if (!this.sampling) {
-            this.sampling = true;
-            try {
-                const payload = await this.sampleStats();
-                this.lastStatsAt = this.now();
-                await Promise.resolve(this.onStats(payload)).catch(() => {});
-            } finally {
-                this.sampling = false;
-            }
+        if (this.sampling) {
+            // The sample in flight may carry the old state: the one that finishes it sends again.
+            this.statsDirty = true;
+            return;
+        }
+        this.sampling = true;
+        this.statsDirty = false;
+        try {
+            const payload = await this.sampleStats();
+            await Promise.resolve(this.onStats(payload, { timeoutMs: STATS_POST_TIMEOUT_MS })).catch(() => {});
+        } catch (error) {
+            // A sample that throws must not end the watch: the next tick tries again.
+        } finally {
+            this.sampling = false;
+            this.lastStatsAt = this.now();
         }
         if (this.watched) {
-            this.scheduleStats(STATS_EVERY_MS);
+            this.scheduleStats(this.statsDirty ? 0 : STATS_EVERY_MS);
         } else {
             this.stopStats();
         }
@@ -462,12 +482,19 @@ class ObsBridge {
         }
         const at = this.now();
         const payload = { ...base, connected: this.connected, sampledAt: at };
-        const active = Boolean(stream && stream.outputActive);
-        // The state follows OBS's events (they carry starting and stopping); an output OBS says is not running is not
-        // live, whatever an event missed while the link was down said.
-        const state = !active && (this.stream.state === 'live' || this.stream.state === 'reconnecting') ? 'off' : this.stream.state;
-        payload.stream = { state, uptimeMs: active ? Math.max(0, Math.trunc(Number(stream.outputDuration) || 0)) : 0 };
-        payload.bitrateKbps = this.bitrate(active ? Number(stream.outputBytes) : null, at);
+        if (!stream) {
+            // GetStreamStatus failed this time (OBS busy, a hiccup): say nothing about the output rather than "off",
+            // and keep the bitrate baseline for the next sample.
+            payload.stream = { state: this.stream.state, uptimeMs: null };
+            payload.bitrateKbps = null;
+        } else {
+            const active = Boolean(stream.outputActive);
+            // The state follows OBS's events (they carry starting and stopping); an output OBS says is not running is
+            // not live, whatever an event missed while the link was down said.
+            const state = !active && (this.stream.state === 'live' || this.stream.state === 'reconnecting') ? 'off' : this.stream.state;
+            payload.stream = { state, uptimeMs: active ? Math.max(0, Math.trunc(Number(stream.outputDuration) || 0)) : 0 };
+            payload.bitrateKbps = this.bitrate(active ? Number(stream.outputBytes) : null, at);
+        }
         payload.fps = this.videoFps == null ? null : round(this.videoFps, 2);
         payload.activeFps = stats ? round(stats.activeFps, 2) : null;
         payload.cpu = stats ? round(stats.cpuUsage, 1) : null;

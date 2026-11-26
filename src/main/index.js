@@ -1029,8 +1029,8 @@ function buildServices() {
         },
         // Live stats for a dashboard that is watching. Not logged on failure: one every 2 s would bury the log, and
         // the dashboard already says when none arrive.
-        onStats: async (payload) => {
-            if (store.hasCredential()) await lbcbot.postObsStats(payload);
+        onStats: async (payload, options) => {
+            if (store.hasCredential()) await lbcbot.postObsStats(payload, options);
         },
         // What the dashboard calls this OBS, as the app's list does: the user's name for the PC, else "This PC", else
         // the name it reports.
