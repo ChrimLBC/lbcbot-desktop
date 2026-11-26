@@ -143,7 +143,7 @@ function applyUpdateStatus(status) {
 
 /*
  * The OBS card: one row per connection (2026-11-26, HANDOFF-obs-multi). A row is its state dot, its name (rename in
- * place), the address small beside it, "Goes live" on the streaming one when there are several, and under it the one
+ * place), the address small beside it, and under it the one
  * thing that row needs now: the stream line (Start, Stop with Undo) while connected, a password field while OBS wants
  * one, Connect after a Disconnect. Everything else is in its ⋯ menu.
  *
@@ -161,7 +161,8 @@ const OBS_STATE_TEXT = {
 const OBS_ICON = {
     more: '<svg viewBox="0 0 24 24" fill="currentColor" stroke="none" aria-hidden="true"><circle cx="5" cy="12" r="1.9"/><circle cx="12" cy="12" r="1.9"/><circle cx="19" cy="12" r="1.9"/></svg>',
     rename: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>',
-    live: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="2"/><path d="M16.24 7.76a6 6 0 0 1 0 8.49"/><path d="M7.76 16.24a6 6 0 0 1 0-8.49"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/><path d="M4.93 19.07a10 10 0 0 1 0-14.14"/></svg>',
+    up: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>',
+    down: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><polyline points="19 12 12 19 5 12"/></svg>',
     power: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg>',
     remove: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>',
     start: '<svg viewBox="0 0 24 24" fill="currentColor" stroke="none" aria-hidden="true"><polygon points="7 4 20 12 7 20 7 4"/></svg>',
@@ -384,15 +385,6 @@ function rowHead(conn) {
         head.appendChild(name);
     }
 
-    // "Goes live" only means something next to another OBS.
-    if (conn.live && obs.conns.length > 1) {
-        const badge = document.createElement('span');
-        badge.className = 'obs-badge';
-        badge.title = 'Start and Stop on your dashboards, and your OBS triggers, use this OBS';
-        badge.innerHTML = OBS_ICON.live;
-        badge.appendChild(document.createTextNode('Goes live'));
-        head.appendChild(badge);
-    }
     if (!on) {
         const state = document.createElement('span');
         state.className = `obs-row__state${bad ? ' obs-row__state--bad' : ''}`;
@@ -668,13 +660,17 @@ function toggleObsMenu(id, anchor) {
     if (!conn) return;
     const menu = el('obs-menu');
     const items = [menuItem(OBS_ICON.rename, 'Rename', () => startObsRename(id))];
-    if (!conn.live && obs.conns.length > 1) {
-        items.push(menuItem(OBS_ICON.live, 'Make this the one that goes live', async () => {
-            obs.conns = obs.conns.map((c) => ({ ...c, live: c.id === id }));
-            renderObs();
-            await window.lbcbot.setLiveObs(id);
-        }));
-    }
+    // The order is the user's own; the first is where a trigger's OBS action goes (one with no OBS named).
+    const index = obs.conns.findIndex((c) => c.id === id);
+    const move = (delta) => async () => {
+        const list = [...obs.conns];
+        [list[index], list[index + delta]] = [list[index + delta], list[index]];
+        obs.conns = list;
+        renderObs();
+        await window.lbcbot.moveObs(id, delta);
+    };
+    if (index > 0) items.push(menuItem(OBS_ICON.up, 'Move up', move(-1)));
+    if (index >= 0 && index < obs.conns.length - 1) items.push(menuItem(OBS_ICON.down, 'Move down', move(1)));
     const idle = ['off', 'bad-password', 'needs-password'].includes(conn.state);
     items.push(idle
         ? menuItem(OBS_ICON.power, 'Connect', () => connectObsRow(id))
@@ -2322,9 +2318,8 @@ function wire() {
     window.lbcbot.onUpdateStatus(applyUpdateStatus);
     window.lbcbot.onLog(appendLog);
     window.lbcbot.onObsStatus((status) => {
-        // The sidebar's OBS line is the one that goes live.
-        const live = (status.connections || []).find((c) => c.live);
-        setStatus('obs', Boolean(live && live.connected));
+        // The sidebar's OBS line: on while any OBS is connected.
+        setStatus('obs', (status.connections || []).some((c) => c.connected));
         applyObsStatus(status);
     });
     window.lbcbot.onGreenSplitStatus(applyGreenSplitStatus);

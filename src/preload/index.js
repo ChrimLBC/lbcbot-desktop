@@ -24,7 +24,7 @@ contextBridge.exposeInMainWorld('lbcbot', {
     addObs: (options) => ipcRenderer.invoke('add-obs', options),
     removeObs: (id) => ipcRenderer.invoke('remove-obs', id),
     renameObs: (id, name) => ipcRenderer.invoke('rename-obs', { id, name }),
-    setLiveObs: (id) => ipcRenderer.invoke('set-live-obs', id),
+    moveObs: (id, delta) => ipcRenderer.invoke('move-obs', { id, delta }),
     connectObs: (id, password) => ipcRenderer.invoke('obs-connect', { id, password }),
     disconnectObs: (id) => ipcRenderer.invoke('obs-disconnect', id),
     setStreaming: (id, on) => ipcRenderer.invoke('set-streaming', { id, on }),

@@ -1037,8 +1037,7 @@ function buildServices() {
         onLog: log,
         onStatus: (status) => send('obs-status', status),
         onObsEvent: async (event) => {
-            // OBS -> LBCBot, from the OBS that goes live only until the API tells PCs apart (ObsConnections), tagged
-            // with which one (obsId, obsName). Fire and forget: a
+            // OBS -> LBCBot, from every OBS, tagged with which one (obsId, name). Fire and forget: a
             // failed post must not stall the OBS event stream, and the user will see it in the log.
             const result = await lbcbot.postObsEvent(event);
             if (!result.ok) {
@@ -1301,8 +1300,8 @@ function registerIpc() {
         return ok;
     });
 
-    ipcMain.handle('set-live-obs', async (_event, id) => {
-        const ok = obs.setLive(String(id));
+    ipcMain.handle('move-obs', async (_event, { id, delta } = {}) => {
+        const ok = obs.move(String(id), Number(delta));
         await pushState();
         return ok;
     });
@@ -1361,8 +1360,8 @@ function registerIpc() {
         return result.ok ? result.data : [];
     });
 
-    // Overlays go into the OBS that goes live.
-    ipcMain.handle('get-scenes', async () => (obs.live ? obs.live.getSceneList() : []));
+    // Overlays go into the first OBS in the list.
+    ipcMain.handle('get-scenes', async () => (obs.first ? obs.first.getSceneList() : []));
 
     /** Open (or focus) the dashboard window. `dashboardId` is optional — without it the picker page loads. */
     ipcMain.handle('open-dashboard', async (_event, dashboardId) => openDashboardWindow(dashboardId));
@@ -1464,7 +1463,7 @@ function registerIpc() {
      * The URL is never shown or copied anywhere.
      */
     ipcMain.handle('add-overlay-to-obs', async (_event, { overlayId, overlayName, sceneName, width, height }) => {
-        const target = obs.live;
+        const target = obs.first;
         if (!target || !target.connected) {
             return { ok: false, error: 'Not connected to OBS.' };
         }

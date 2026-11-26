@@ -3,7 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
-    ObsConnections, migrateSettings, normalizeAddress, displayName, takesLive, withOneLive, newId, ID_PATTERN,
+    ObsConnections, migrateSettings, normalizeAddress, displayName, dropLiveRole, newId, ID_PATTERN,
 } = require('../src/main/obsconnections');
 const { routeDeviceCommand } = require('../src/main/devicecontrol');
 
@@ -82,8 +82,8 @@ function makeManager(list = [], { outcomes = {}, passwords = {} } = {}) {
     return { manager, saved, secrets, statuses, events, stats, logs, bridges };
 }
 
-const here = { id: 'obs_aaaaaaaa', url: 'ws://127.0.0.1:4455', name: '', reported: '', local: true, live: true, enabled: true };
-const there = { id: 'obs_bbbbbbbb', url: 'ws://10.0.0.88:4455', name: 'Streaming PC', reported: '', local: false, live: false, enabled: true };
+const here = { id: 'obs_aaaaaaaa', url: 'ws://127.0.0.1:4455', name: '', reported: '', local: true, enabled: true };
+const there = { id: 'obs_bbbbbbbb', url: 'ws://10.0.0.88:4455', name: 'Streaming PC', reported: '', local: false, enabled: true };
 
 // ------------------------------------------------------------------ ids, addresses, names
 
@@ -111,7 +111,7 @@ test('a connection is called by its rename, else This PC, else the reported name
 
 // ------------------------------------------------------------------ migration
 
-test('the one OBS from before becomes connection #1, goes live, and keeps its name and password', () => {
+test('the one OBS from before becomes connection #1 and keeps its name and password', () => {
     const raw = {
         obsUrl: 'ws://10.0.0.88:4455', obsName: 'CHRIMLBC', obsLocal: false, obsNames: { '10.0.0.88': 'Streaming PC' },
         obsPassword: { encrypted: 'BLOB' },
@@ -119,7 +119,7 @@ test('the one OBS from before becomes connection #1, goes live, and keeps its na
     const { settings, changed } = migrateSettings(raw, () => 'obs_12345678');
     assert.equal(changed, true);
     assert.deepEqual(settings.obsConnections, [{
-        id: 'obs_12345678', url: 'ws://10.0.0.88:4455', name: 'Streaming PC', reported: 'CHRIMLBC', local: false, live: true, enabled: true,
+        id: 'obs_12345678', url: 'ws://10.0.0.88:4455', name: 'Streaming PC', reported: 'CHRIMLBC', local: false, enabled: true,
     }]);
     assert.deepEqual(settings.obsPasswords, { obs_12345678: { encrypted: 'BLOB' } });
     // The old keys stay, for a downgrade.
@@ -146,32 +146,30 @@ test('a settings file from before any OBS setup migrates the default local OBS, 
     assert.deepEqual(settings.obsPasswords, {});
 });
 
-// ------------------------------------------------------------------ the live role
+// ------------------------------------------------------------------ v1.3.3's live role
 
-test('the first connection goes live; a second from another PC takes it from This PC, not the other way round', () => {
-    assert.equal(takesLive([], { local: true }), true);
-    assert.equal(takesLive([{ ...here }], { local: false }), true);
-    assert.equal(takesLive([{ ...there, live: true }], { local: true }), false);
-    assert.equal(takesLive([{ ...there, live: true }], { local: false }), false);
+test('a list saved with a live role puts that one first and drops the key, once', () => {
+    const { list, changed } = dropLiveRole([{ ...here, live: false }, { ...there, live: true }]);
+    assert.equal(changed, true);
+    assert.deepEqual(list.map((c) => c.id), [there.id, here.id]);
+    assert.equal(list.some((c) => 'live' in c), false);
+    assert.equal(dropLiveRole(list).changed, false);
+    const { manager, saved } = makeManager([{ ...here, live: false }, { ...there, live: true }]);
+    assert.deepEqual(manager.list.map((c) => c.id), [there.id, here.id]);
+    assert.deepEqual(saved.pop().map((c) => c.id), [there.id, here.id]);
 });
 
-test('exactly one connection is live, whatever the saved list says', () => {
-    assert.deepEqual(withOneLive([{ ...here, live: false }, { ...there, live: false }]).map((c) => c.live), [true, false]);
-    assert.deepEqual(withOneLive([{ ...here, live: true }, { ...there, live: true }]).map((c) => c.live), [true, false]);
-    assert.deepEqual(withOneLive([{ ...here }, { ...there }], there.id).map((c) => c.live), [false, true]);
-});
+// ------------------------------------------------------------------ add, remove, rename, move
 
-// ------------------------------------------------------------------ add, remove, rename, live
-
-test('adding the streaming PC next to This PC makes it the one that goes live', async () => {
+test('an added PC goes to the end of the list; the first stays where commands with no obsId go', async () => {
     const { manager, saved } = makeManager([{ ...here }]);
     const result = await manager.add({ url: 'ws://10.0.0.88:4455', reported: 'CHRIMLBC' });
     assert.equal(result.ok, true);
     const list = saved.pop();
-    assert.equal(list.length, 2);
-    assert.deepEqual(list.map((c) => c.live), [false, true]);
+    assert.deepEqual(list.map((c) => c.id), [here.id, result.id]);
     assert.equal(list[1].reported, 'CHRIMLBC');
-    assert.equal(manager.live, manager.bridges.get(result.id));
+    assert.equal('live' in list[1], false);
+    assert.equal(manager.first, manager.bridges.get(here.id));
 });
 
 test('an add that needs a password is not kept, and says so', async () => {
@@ -213,24 +211,29 @@ test('a password given with an add is saved under the new id only once it connec
     assert.equal(secrets.get(result.id), 'secret');
 });
 
-test('removing the one that goes live hands the role on and forgets its password', async () => {
+test('removing the first makes the next one first and forgets its password', async () => {
     const { manager, saved, secrets, bridges } = makeManager([{ ...here }, { ...there }], { passwords: { [here.id]: 'pw' } });
     await manager.remove(here.id);
     const list = saved.pop();
-    assert.deepEqual(list.map((c) => [c.id, c.live]), [[there.id, true]]);
+    assert.deepEqual(list.map((c) => c.id), [there.id]);
+    assert.equal(manager.first, manager.bridges.get(there.id));
     assert.equal(secrets.has(here.id), false);
     assert.equal(bridges[0].disconnected, true);
     assert.equal(manager.bridges.has(here.id), false);
 });
 
-test('rename, live and disconnect are saved; a rename is cut to 40 characters', async () => {
+test('rename, move and disconnect are saved; a rename is cut to 40 characters', async () => {
     const { manager, saved } = makeManager([{ ...here }, { ...there }]);
     manager.rename(here.id, `  Source PC${'x'.repeat(50)} `);
     assert.equal(saved.pop()[0].name.length, 40);
-    manager.setLive(there.id);
-    assert.deepEqual(saved.pop().map((c) => c.live), [false, true]);
+    assert.equal(manager.move(there.id, -1), true);
+    assert.deepEqual(saved.pop().map((c) => c.id), [there.id, here.id]);
+    assert.equal(manager.move(there.id, -1), false); // already first
+    assert.equal(manager.move(here.id, 1), false); // already last
+    assert.equal(manager.move('obs_deadbeef', 1), false);
+    assert.equal(manager.first, manager.bridges.get(there.id));
     await manager.disconnect(there.id);
-    assert.equal(saved.pop()[1].enabled, false);
+    assert.equal(saved.pop()[0].enabled, false);
 });
 
 test('connectAll skips a connection disconnected by hand', async () => {
@@ -242,8 +245,8 @@ test('connectAll skips a connection disconnected by hand', async () => {
 test('the status lists every connection, never a password', () => {
     const { manager } = makeManager([{ ...here }, { ...there }], { passwords: { [there.id]: 'hunter2' } });
     const { connections } = manager.status;
-    assert.deepEqual(connections.map((c) => [c.displayName, c.host, c.live, c.hasPassword]), [
-        ['This PC', '127.0.0.1', true, false], ['Streaming PC', '10.0.0.88', false, true],
+    assert.deepEqual(connections.map((c) => [c.displayName, c.host, c.hasPassword]), [
+        ['This PC', '127.0.0.1', false], ['Streaming PC', '10.0.0.88', true],
     ]);
     assert.equal(JSON.stringify(manager.status).includes('hunter2'), false);
 });
@@ -259,12 +262,12 @@ test('a scan that now reports a name for a listed PC keeps it', () => {
 
 const command = (action, extra = {}) => ({ action: JSON.stringify(action), ...extra });
 
-test('a command with no obsId goes to the one that goes live, so old triggers act as before', () => {
-    const { manager, bridges } = makeManager([{ ...here, live: false }, { ...there, live: true }]);
+test('a command with no obsId goes to the first OBS in the list, so a one-OBS user sees no change', () => {
+    const { manager, bridges } = makeManager([{ ...there }, { ...here }]);
     routeDeviceCommand(command({ type: 'SWITCH_SCENE', sceneName: 'BRB' }), { obs: manager, greensplit: null });
     routeDeviceCommand(command({ type: 'START_STREAM' }), { obs: manager, greensplit: null });
-    assert.equal(bridges[0].executed.length, 0);
-    assert.equal(bridges[1].executed.length, 2);
+    assert.equal(bridges[0].executed.length, 2);
+    assert.equal(bridges[1].executed.length, 0);
 });
 
 test('a command with an obsId goes to that connection, on the command or in its action', () => {
@@ -275,7 +278,7 @@ test('a command with an obsId goes to that connection, on the command or in its 
     assert.equal(bridges[1].executed.length, 2);
 });
 
-test('a command for an OBS that is no longer here is dropped, never sent to the live one', () => {
+test('a command for an OBS that is no longer here is dropped, never sent to the first', () => {
     const { manager, bridges, logs } = makeManager([{ ...here }]);
     manager.execute(command({ type: 'STOP_STREAM' }, { obsId: 'obs_deadbeef' }));
     manager.execute(command({ type: 'STOP_STREAM' }, { obsId: '10.0.0.88' }));
@@ -283,14 +286,12 @@ test('a command for an OBS that is no longer here is dropped, never sent to the 
     assert.equal(logs.length, 2);
 });
 
-test('WATCH_STATS goes to the live one only, unless the API asks every connection (all: true)', () => {
+test('WATCH_STATS watches the OBS it names, else the first', () => {
     const { manager, bridges } = makeManager([{ ...here }, { ...there }]);
     manager.execute(command({ type: 'WATCH_STATS', seconds: 60 }));
     assert.deepEqual(bridges.map((b) => b.executed.length), [1, 0]);
-    manager.execute(command({ type: 'WATCH_STATS', seconds: 60, all: true }));
-    assert.deepEqual(bridges.map((b) => b.executed.length), [2, 1]);
     manager.execute(command({ type: 'WATCH_STATS', seconds: 60, obsId: there.id }));
-    assert.deepEqual(bridges.map((b) => b.executed.length), [2, 2]);
+    assert.deepEqual(bridges.map((b) => b.executed.length), [1, 1]);
 });
 
 test('with no OBS set up, WATCH_STATS is silent and nothing is logged for it', () => {
@@ -299,51 +300,38 @@ test('with no OBS set up, WATCH_STATS is silent and nothing is logged for it', (
     assert.equal(logs.length, 0);
 });
 
-test('setStreaming with no id starts the one that goes live', async () => {
-    const { manager, bridges } = makeManager([{ ...here, live: false }, { ...there, live: true }]);
+test('setStreaming with no id starts the first', async () => {
+    const { manager, bridges } = makeManager([{ ...there }, { ...here }]);
     await manager.setStreaming(null, true);
     await manager.setStreaming(here.id, false);
-    assert.deepEqual(bridges.map((b) => b.executed), [[{ streaming: false }], [{ streaming: true }]]);
+    assert.deepEqual(bridges.map((b) => b.executed), [[{ streaming: true }], [{ streaming: false }]]);
 });
 
 // ------------------------------------------------------------------ events and stats tagging
 
-test('only the OBS that goes live fires triggers, tagged with its id and name', () => {
-    const { manager, bridges, events } = makeManager([{ ...here }, { ...there }]);
-    bridges[0].hooks.onObsEvent({ eventType: 'OBS_SCENE_CHANGED', sceneName: 'Game' });
-    bridges[1].hooks.onObsEvent({ eventType: 'OBS_SCENE_CHANGED', sceneName: 'BRB' });
-    assert.deepEqual(events, [{ eventType: 'OBS_SCENE_CHANGED', sceneName: 'Game', obsId: here.id, obsName: 'This PC' }]);
-    manager.setLive(there.id);
+test('every OBS fires triggers, each tagged with its id and name', () => {
+    const { bridges, events } = makeManager([{ ...here }, { ...there }]);
     bridges[0].hooks.onObsEvent({ eventType: 'OBS_SCENE_CHANGED', sceneName: 'Game' });
     bridges[1].hooks.onObsEvent({ eventType: 'OBS_STREAM_STARTED' });
-    assert.deepEqual(events.slice(1), [{ eventType: 'OBS_STREAM_STARTED', obsId: there.id, obsName: 'Streaming PC' }]);
+    assert.deepEqual(events, [
+        { eventType: 'OBS_SCENE_CHANGED', sceneName: 'Game', obsId: here.id, name: 'This PC' },
+        { eventType: 'OBS_STREAM_STARTED', obsId: there.id, name: 'Streaming PC' },
+    ]);
 });
 
-test('stats carry obsId, the app\'s name and the role; another OBS posts only once the API asks every one', () => {
-    const { manager, bridges, stats } = makeManager([{ ...here, live: false }, { ...there, live: true }]);
-    bridges[1].hooks.onStats({ connected: true, host: '10.0.0.88', name: '', sampledAt: 1 });
-    bridges[0].hooks.onStats({ connected: true, host: '127.0.0.1', name: '', sampledAt: 2 });
-    assert.deepEqual(stats.map((s) => [s.obsId, s.role]), [[there.id, 'live']]);
-    manager.execute({ action: JSON.stringify({ type: 'WATCH_STATS', all: true }) });
-    bridges[0].hooks.onStats({ connected: true, host: '127.0.0.1', name: '', sampledAt: 3 });
-    assert.deepEqual(stats.map((s) => [s.obsId, s.name, s.role]), [[there.id, 'Streaming PC', 'live'], [here.id, 'This PC', 'other']]);
-});
-
-test('when the role moves, a dashboard watching stats moves with it and the old OBS stops at once', () => {
-    const { manager, bridges } = makeManager([{ ...here }, { ...there, live: false }]);
-    let clock = 1000;
-    bridges.forEach((b) => {
-        b.leaseUntil = 0;
-        b.now = () => clock;
-        Object.defineProperty(b, 'watched', { get: () => clock < b.leaseUntil });
-        b.stopStats = () => { b.leaseUntil = 0; };
-        b.watchStats = (seconds) => { b.leaseUntil = clock + seconds * 1000; };
-    });
-    bridges[0].watchStats(90);
-    clock += 30000;
-    manager.setLive(there.id);
-    assert.equal(bridges[0].watched, false);
-    assert.equal(bridges[1].leaseUntil, clock + 60000);
+test('every watched OBS posts stats, each with its obsId and name and the whole list for the picker', async () => {
+    const { manager, bridges, stats } = makeManager([{ ...here }, { ...there }]);
+    await bridges[1].connect();
+    bridges[0].hooks.onStats({ connected: false, host: '127.0.0.1', name: '', sampledAt: 1 });
+    bridges[1].hooks.onStats({ connected: true, host: '10.0.0.88', name: '', sampledAt: 2 });
+    assert.deepEqual(stats.map((s) => [s.obsId, s.name]), [[here.id, 'This PC'], [there.id, 'Streaming PC']]);
+    assert.deepEqual(stats[1].connections, [
+        { obsId: here.id, name: 'This PC', connected: false, streamState: 'off' },
+        { obsId: there.id, name: 'Streaming PC', connected: true, streamState: 'off' },
+    ]);
+    manager.move(there.id, -1);
+    bridges[0].hooks.onStats({ connected: false });
+    assert.deepEqual(stats[2].connections.map((c) => c.obsId), [there.id, here.id]);
 });
 
 test('the same PC added twice at once is tried once', async () => {
@@ -358,7 +346,7 @@ test('a PC still being tried fires no triggers and gets no commands', async () =
     const { manager, bridges, events } = makeManager([]);
     const pending = manager.add({ url: '10.0.0.88' });
     bridges[0].hooks.onObsEvent({ eventType: 'OBS_SCENE_CHANGED' });
-    manager.execute({ action: JSON.stringify({ type: 'WATCH_STATS', all: true }) });
+    manager.execute({ action: JSON.stringify({ type: 'WATCH_STATS' }) });
     assert.equal(events.length, 0);
     assert.equal(bridges[0].executed.length, 0);
     await pending;
