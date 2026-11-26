@@ -1254,6 +1254,12 @@ function registerIpc() {
     ipcMain.handle('find-obs', async () => {
         try {
             lastObsScan = await obsDiscovery.discover();
+            // A name the network now reports for the PC already in use (Network discovery turned on there since).
+            const current = lastObsScan.find((r) => r.url === store.settings().obsUrl);
+            if (current && current.name && current.name !== store.settings().obsName) {
+                store.update({ obsName: current.name });
+                await pushState();
+            }
         } catch (error) {
             log(`Could not search the network for OBS: ${error.message}`);
             lastObsScan = [];

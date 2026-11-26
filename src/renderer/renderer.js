@@ -165,11 +165,53 @@ function setObsHint(error) {
     hint.className = `hint${error ? ' hint--bad' : ''}`;
 }
 
+function obsHost() {
+    try { return new URL(obsSettings.obsUrl).hostname; } catch (error) { return obsSettings.obsUrl || ''; }
+}
+
+/** A PC's name: the one given in the app, else what the network reported, else nothing (its address shows). */
+function obsNameFor(host, reported, local) {
+    const given = (obsSettings.obsNames || {})[host];
+    if (given) return given;
+    if (local) return 'This PC';
+    return reported || '';
+}
+
 function obsPlace() {
-    if (obsSettings.obsLocal !== false) return { name: 'This PC', host: '' };
-    let host = '';
-    try { host = new URL(obsSettings.obsUrl).hostname; } catch (error) { host = obsSettings.obsUrl || ''; }
-    return { name: obsSettings.obsName || host, host: obsSettings.obsName ? host : '' };
+    const host = obsHost();
+    const local = obsSettings.obsLocal !== false;
+    const name = obsNameFor(host, obsSettings.obsName, local);
+    // The address beside a name, small; never beside "This PC" (127.0.0.1 tells nobody anything).
+    return { name: name || host, host: name && !local ? host : '' };
+}
+
+function startObsRename() {
+    const input = el('obs-rename-input');
+    input.value = (obsSettings.obsNames || {})[obsHost()] || obsPlace().name;
+    el('obs-where').hidden = true;
+    el('obs-rename').hidden = true;
+    input.hidden = false;
+    input.focus();
+    input.select();
+}
+
+/** Save (or with `save` false, drop) the rename. An empty name goes back to the reported one. */
+async function endObsRename(save) {
+    const input = el('obs-rename-input');
+    if (input.hidden) return;
+    input.hidden = true;
+    el('obs-where').hidden = false;
+    el('obs-rename').hidden = false;
+    if (!save) return;
+    const host = obsHost();
+    const names = { ...(obsSettings.obsNames || {}) };
+    const name = input.value.trim().slice(0, 40);
+    if (name) names[host] = name;
+    else delete names[host];
+    obsSettings = { ...obsSettings, obsNames: names };
+    renderObsWhere();
+    if (obsFound) renderObsFound();
+    await window.lbcbot.updateSettings({ obsNames: names });
 }
 
 function renderObsWhere() {
@@ -287,11 +329,12 @@ function renderObsFound() {
         if (current) li.className = 'is-current';
         const name = document.createElement('span');
         name.className = 'list__name';
-        name.textContent = row.local ? 'This PC' : (row.name || row.host);
+        const label = obsNameFor(row.host, row.name, row.local);
+        name.textContent = label || row.host;
         const meta = document.createElement('span');
         meta.className = 'list__meta';
         // The address only when there's a name above it: a PC that told us no name is already listed by address.
-        meta.textContent = current ? 'Connected' : (row.local || row.name ? row.host : '');
+        meta.textContent = current ? 'Connected' : (label ? row.host : '');
         li.append(name, meta);
         if (row.authRequired) {
             const lock = document.createElement('span');
@@ -1046,6 +1089,13 @@ function wire() {
         if (event.key === 'Enter') el('obs-connect').click();
     });
     el('obs-find').addEventListener('click', findObs);
+    el('obs-rename').addEventListener('click', startObsRename);
+    el('obs-where').addEventListener('dblclick', startObsRename);
+    el('obs-rename-input').addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') endObsRename(true);
+        if (event.key === 'Escape') endObsRename(false);
+    });
+    el('obs-rename-input').addEventListener('blur', () => endObsRename(true));
     el('obs-start').addEventListener('click', () => setStreaming(true));
     el('obs-stop').addEventListener('click', startObsStop);
     el('obs-undo').addEventListener('click', () => {

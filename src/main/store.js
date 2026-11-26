@@ -27,6 +27,11 @@ const DEFAULTS = {
     obsName: '',
     /** Whether obsUrl is this PC, as the scan found it ("This PC" on the card). */
     obsLocal: true,
+    /**
+     * Names given to OBS PCs in the app, keyed by address: `{ "10.0.0.88": "Streaming PC" }`. They beat the name the
+     * network reports, which beats the bare address, and outlive a new scan.
+     */
+    obsNames: {},
     autoConnectObs: true,
     forwardObsEvents: true,
     /**

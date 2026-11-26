@@ -609,6 +609,9 @@ button:focus-visible { outline: 2px solid rgba(var(--accent-rgb), 0.6); outline-
    --------------------------------------------------------------------------------------------------------------------- */
 .obs-where { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
 .obs-where small { color: var(--muted); font-size: 12px; margin-left: 6px; }
+.obs-where + .obs-rename { flex: 1 1 auto; min-width: 0; }
+.obs-rename-btn, .obs-find { flex: 0 0 auto; }
+.obs-rename-btn { margin-left: 0; }
 .obs-found { margin: 4px 0 8px; padding: 0 10px; border-radius: 8px; background: rgba(255, 255, 255, 0.03); }
 .obs-found li { cursor: pointer; padding: 8px 4px; }
 .obs-found li:hover { color: #fff; }
