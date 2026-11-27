@@ -522,6 +522,14 @@ class LbcBot {
         return this.request('POST', `/users/stream-template/${id}/apply`);
     }
 
+    /**
+     * Pair a Twitch template with a YouTube one (null unlinks). The server sets and clears both sides together and
+     * answers the whole list.
+     */
+    linkStreamTemplate(id, linkedTemplateId) {
+        return this.request('POST', `/users/stream-template/${id}/link`, { linkedTemplateId });
+    }
+
     /** Fuzzy Twitch category search, so a template stores the game_id rather than a name to resolve later. */
     searchTwitchCategories(query) {
         return this.request('GET', `/users/twitch/categories?q=${encodeURIComponent(query)}`);

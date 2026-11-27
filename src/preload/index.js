@@ -52,6 +52,7 @@ contextBridge.exposeInMainWorld('lbcbot', {
     saveStreamTemplate: (id, template) => ipcRenderer.invoke('save-stream-template', { id, template }),
     deleteStreamTemplate: (id) => ipcRenderer.invoke('delete-stream-template', id),
     applyStreamTemplate: (id) => ipcRenderer.invoke('apply-stream-template', id),
+    linkStreamTemplate: (id, linkedTemplateId) => ipcRenderer.invoke('link-stream-template', { id, linkedTemplateId }),
     searchTwitchCategories: (query) => ipcRenderer.invoke('search-twitch-categories', query),
 
     // Updates. The renderer can ask for a check and can apply a downloaded one; it never sees a URL or a file,

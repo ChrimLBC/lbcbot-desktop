@@ -1432,6 +1432,14 @@ function registerIpc() {
         return result;
     });
 
+    ipcMain.handle('link-stream-template', async (_event, { id, linkedTemplateId }) => {
+        const result = await lbcbot.linkStreamTemplate(id, linkedTemplateId);
+        if (!result.ok) {
+            log(`Could not link the templates: ${result.error || result.status}`);
+        }
+        return result;
+    });
+
     /**
      * Apply a template. The per-platform outcomes are logged as well as returned: the renderer shows them
      * inline, but "Twitch updated, YouTube skipped" is exactly the sort of thing worth being able to scroll

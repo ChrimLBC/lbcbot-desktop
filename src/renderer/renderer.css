@@ -1414,3 +1414,96 @@ button:focus-visible { outline: 2px solid rgba(var(--accent-rgb), 0.6); outline-
 .scene-menu__label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .scene-menu .plan__menuitem svg { flex: 0 0 auto; width: 14px; height: 14px; color: var(--muted); }
 .scene-menu__note { margin: 0; padding: 7px 10px 3px; font-size: 12px; color: var(--muted); }
+
+/* ---- linked pairs (Caite, 2026-11-27): a Twitch and a YouTube template, one framed block, Apply both ---------- */
+.plan__pair {
+    margin: 4px 8px;
+    overflow: clip;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.02);
+}
+.plan__pair > .plan__row { padding-left: 8px; }
+.plan__pair > .plan__row + .plan__row { border-top: 1px solid rgba(255, 255, 255, 0.06); }
+.plan__pairhead {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 32px;
+    padding: 0 6px 0 10px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    background: rgba(255, 255, 255, 0.03);
+}
+.plan__pairlabel {
+    display: inline-flex;
+    flex: 1 1 auto;
+    align-items: center;
+    gap: 6px;
+    color: var(--muted);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+}
+.plan__pairlabel svg { width: 12px; height: 12px; }
+/* The pair's Apply both: the editor's pill, a size down to sit in the 32px header. */
+.plan__apply--both { min-width: 0; height: 24px; padding: 0 10px 0 8px; font-size: 12px; }
+
+/* Dragging a template onto one of the other platform links the two. */
+.plan__row[draggable="true"] { cursor: grab; }
+.plan__row.is-dragging { opacity: 0.5; }
+.plan__row.is-linkdrop {
+    position: relative;
+    background: rgba(var(--accent-rgb), 0.14);
+    box-shadow: inset 0 0 0 1px var(--accent);
+}
+.plan__row.is-linkdrop::after {
+    content: "Link";
+    position: absolute;
+    top: 50%;
+    right: 48px;
+    transform: translateY(-50%);
+    padding: 2px 10px;
+    border-radius: 999px;
+    background: var(--accent);
+    color: var(--on-accent);
+    font-size: 11.5px;
+    font-weight: 600;
+    pointer-events: none;
+}
+
+/* The editor's Link icon lights up while linked; its menu opens under it. */
+.plan__edhead { position: relative; }
+.plan__icon.is-on { color: var(--accent); }
+.plan__icon[hidden], .plan__apply[hidden], .plan__linked[hidden] { display: none; }
+.plan__menu--link { top: 38px; right: 8px; min-width: 250px; max-height: 320px; overflow-y: auto; }
+.plan__menuhead { padding: 6px 10px 4px; color: var(--muted); font-size: 10.5px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; }
+.plan__menutext { display: flex; flex: 1 1 auto; flex-direction: column; min-width: 0; }
+.plan__menutext > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.plan__menutext small { color: var(--muted); font-size: 11px; }
+.plan__menuitem[aria-checked="true"] { background: rgba(var(--accent-rgb), 0.1); }
+.plan__menuitem[aria-checked="true"] > svg:last-child { color: var(--accent); width: 14px; height: 14px; }
+
+/* "Linked with ▶ …" under the header: opens the partner. */
+.plan__linked {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-self: flex-start;
+    align-items: center;
+    gap: 6px;
+    max-width: calc(100% - 28px);
+    margin: 10px 14px 0;
+    padding: 3px 8px;
+    border: 0;
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.04);
+    color: var(--muted);
+    font-size: 12px;
+    box-shadow: none !important;
+}
+.plan__linked svg { width: 12px; height: 12px; flex: 0 0 auto; }
+.plan__linked:hover:not(:disabled) { background: rgba(255, 255, 255, 0.08); border-color: transparent; color: var(--ink); }
+.plan__linkedmark { display: inline-flex; }
+.plan__linkedmark--twitch { color: var(--twitch); }
+.plan__linkedmark--youtube { color: var(--youtube); }
+.plan__linkedname { min-width: 0; overflow: hidden; color: var(--ink); text-overflow: ellipsis; white-space: nowrap; }

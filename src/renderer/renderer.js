@@ -1846,6 +1846,7 @@ const TPL_ICON = {
     grid: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/></svg>',
     plus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>',
     x: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>',
+    link: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>',
 };
 
 /** Twitch box art at a size; null without a category id. */
@@ -1898,6 +1899,7 @@ let draft = null;
 let saveTimer = null;
 let saving = Promise.resolve();
 let undoTimer = null;
+/** What the bottom snack's Undo runs: put a deleted template back, or a link change. */
 let undoTemplate = null;
 
 /* ---------- small DOM helpers */
@@ -1964,6 +1966,124 @@ function drawApply(button, id, labelled) {
     button.setAttribute('aria-label', word);
 }
 
+/* ---------- linked pairs (Caite, 2026-11-27): a Twitch and a YouTube template applied together */
+
+/** The template `t` is linked with, while both platforms are connected and it names `t` back. */
+function partnerOf(t) {
+    if (!t || t.linkedTemplateId == null || linkedPlatforms.length < 2) return null;
+    const p = templates.find((x) => x.streamTemplateId === t.linkedTemplateId);
+    return p && p.linkedTemplateId === t.streamTemplateId && p.platform !== t.platform ? p : null;
+}
+
+/** The pair's state: busy while either is, a cross when either failed, a tick when both landed. */
+function pairStateOf(a, b) {
+    const s = [a, b].map((t) => (applyStates.get(t.streamTemplateId) || {}).state);
+    if (s.includes('busy')) return 'busy';
+    if (s.includes('error')) return 'error';
+    if (s[0] === 'ok' && s[1] === 'ok') return 'ok';
+    return 'idle';
+}
+
+/** Apply both's button: the pair's state, labelled "Both". */
+function drawApplyPair(button, a, b, labelled) {
+    const state = pairStateOf(a, b);
+    button.className = `plan__apply plan__apply--label${labelled ? '' : ' plan__apply--both'} is-${state}`;
+    button.disabled = state === 'busy';
+    button.innerHTML = { idle: TPL_ICON.send, busy: TPL_ICON.spin, ok: TPL_ICON.check, error: TPL_ICON.cross }[state];
+    button.appendChild(tplEl('span', null, 'Both'));
+    const word = { idle: 'Apply both', busy: 'Applying both…', ok: 'Applied both', error: 'Could not apply one of them' }[state];
+    button.title = word;
+    button.setAttribute('aria-label', word);
+}
+
+/** Apply both: each on its own row, at once, as its own Apply would. */
+function applyPair(a, b) {
+    return Promise.all([applyTemplate(a.streamTemplateId), applyTemplate(b.streamTemplateId)]);
+}
+
+/** Link (or unlink with null), with Undo putting back whatever pairs the two were in before. */
+async function linkTemplates(id, to) {
+    const before = (x) => {
+        const t = x != null && templates.find((r) => r.streamTemplateId === x);
+        return t ? (t.linkedTemplateId ?? null) : null;
+    };
+    const was = before(id);
+    const otherWas = before(to);
+    if (to != null && was === to) return;
+    await flushSave();
+    const result = await window.lbcbot.linkStreamTemplate(id, to);
+    if (!result || !result.ok) {
+        setTemplateStatus(reasonOf(result, 'Could not link — see Activity.'));
+        return;
+    }
+    takeLinks(result.data);
+    showUndo(to == null ? 'Unlinked' : 'Linked', async () => {
+        const back = await window.lbcbot.linkStreamTemplate(id, was);
+        if (!back || !back.ok) {
+            setTemplateStatus(reasonOf(back, 'Could not undo — see Activity.'));
+            return;
+        }
+        takeLinks(back.data);
+        if (to != null && otherWas != null && otherWas !== id) {
+            const again = await window.lbcbot.linkStreamTemplate(to, otherWas);
+            if (again && again.ok) takeLinks(again.data);
+        }
+    });
+}
+
+/** Take only the links from the server's list: what is being typed stays as typed. */
+function takeLinks(list) {
+    if (!Array.isArray(list)) return;
+    const links = new Map(list.map((t) => [t.streamTemplateId, t.linkedTemplateId ?? null]));
+    templates = templates.map((t) => (links.has(t.streamTemplateId) ? { ...t, linkedTemplateId: links.get(t.streamTemplateId) } : t));
+    if (draft && links.has(draft.streamTemplateId)) draft.linkedTemplateId = links.get(draft.streamTemplateId);
+    renderTemplateList();
+    drawLinkControls();
+}
+
+/** The template being dragged to link (HTML5 drag: rows don't reorder on the desktop). */
+let dragTemplateId = null;
+
+function wireLinkDrag(row, t) {
+    // Only a template on its own links by dropping; a pair is unlinked from its editor.
+    if (linkedPlatforms.length < 2) return;
+    if (!partnerOf(t)) {
+        row.draggable = true;
+        row.addEventListener('dragstart', (e) => {
+            dragTemplateId = t.streamTemplateId;
+            e.dataTransfer.effectAllowed = 'link';
+            e.dataTransfer.setData('text/plain', String(t.streamTemplateId));
+            row.classList.add('is-dragging');
+        });
+        row.addEventListener('dragend', () => {
+            dragTemplateId = null;
+            row.classList.remove('is-dragging');
+            document.querySelectorAll('.plan__row.is-linkdrop').forEach((n) => n.classList.remove('is-linkdrop'));
+        });
+    }
+    const canDrop = () => {
+        const from = dragTemplateId != null && templates.find((x) => x.streamTemplateId === dragTemplateId);
+        return from && from.streamTemplateId !== t.streamTemplateId && from.platform !== t.platform;
+    };
+    row.addEventListener('dragover', (e) => {
+        if (!canDrop()) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'link';
+        row.classList.add('is-linkdrop');
+    });
+    row.addEventListener('dragleave', (e) => {
+        if (!row.contains(e.relatedTarget)) row.classList.remove('is-linkdrop');
+    });
+    row.addEventListener('drop', (e) => {
+        if (!canDrop()) return;
+        e.preventDefault();
+        row.classList.remove('is-linkdrop');
+        const from = dragTemplateId;
+        dragTemplateId = null;
+        linkTemplates(from, t.streamTemplateId);
+    });
+}
+
 /* ---------- the list */
 
 function renderTemplateList() {
@@ -1987,34 +2107,65 @@ function renderTemplateList() {
         return;
     }
 
+    // A linked pair is one framed block where the earlier of the two sits, Twitch first (as on the website).
+    const done = new Set();
     templates.forEach((t) => {
-        const id = t.streamTemplateId;
-        const shown = id === selectedTemplateId && draft ? draft : t;
-        const li = tplEl('li', `plan__row${id === selectedTemplateId ? ' is-selected' : ''}`);
-        li.dataset.platform = (shown.platform || 'TWITCH').toLowerCase();
-
-        const main = tplEl('button', 'plan__rowmain');
-        main.type = 'button';
-        const text = tplEl('span', 'plan__rowtext');
-        const [line1, line2] = rowLines(shown);
-        text.appendChild(tplEl('span', 'plan__name', line1));
-        const st = applyStates.get(id);
-        if (st && st.message) {
-            text.appendChild(tplEl('span', 'plan__sub is-error', st.message));
-        } else {
-            text.appendChild(tplEl('span', 'plan__sub', line2));
+        if (done.has(t.streamTemplateId)) return;
+        const partner = partnerOf(t);
+        if (!partner) {
+            done.add(t.streamTemplateId);
+            list.appendChild(templateRow(t, 'li'));
+            return;
         }
-        main.append(thumbFor(shown), text);
-        main.addEventListener('click', () => selectTemplate(id));
-
-        const apply = tplEl('button');
-        apply.type = 'button';
-        drawApply(apply, id, false);
-        apply.addEventListener('click', () => applyTemplate(id));
-
-        li.append(main, apply);
-        list.appendChild(li);
+        const [a, b] = t.platform === 'TWITCH' ? [t, partner] : [partner, t];
+        done.add(a.streamTemplateId);
+        done.add(b.streamTemplateId);
+        const group = tplEl('li', 'plan__pair');
+        group.setAttribute('role', 'group');
+        group.setAttribute('aria-label', 'Linked templates');
+        const head = tplEl('div', 'plan__pairhead');
+        const label = tplEl('span', 'plan__pairlabel');
+        label.innerHTML = TPL_ICON.link;
+        label.appendChild(tplEl('span', null, 'Linked'));
+        const both = tplEl('button');
+        both.type = 'button';
+        drawApplyPair(both, a, b, false);
+        both.addEventListener('click', () => applyPair(a, b));
+        head.append(label, both);
+        group.append(head, templateRow(a, 'div'), templateRow(b, 'div'));
+        list.appendChild(group);
     });
+}
+
+/** One template's row: a list item on its own, a plain block inside a pair. */
+function templateRow(t, tag) {
+    const id = t.streamTemplateId;
+    const shown = id === selectedTemplateId && draft ? draft : t;
+    const li = tplEl(tag, `plan__row${id === selectedTemplateId ? ' is-selected' : ''}`);
+    li.dataset.platform = (shown.platform || 'TWITCH').toLowerCase();
+    wireLinkDrag(li, t);
+
+    const main = tplEl('button', 'plan__rowmain');
+    main.type = 'button';
+    const text = tplEl('span', 'plan__rowtext');
+    const [line1, line2] = rowLines(shown);
+    text.appendChild(tplEl('span', 'plan__name', line1));
+    const st = applyStates.get(id);
+    if (st && st.message) {
+        text.appendChild(tplEl('span', 'plan__sub is-error', st.message));
+    } else {
+        text.appendChild(tplEl('span', 'plan__sub', line2));
+    }
+    main.append(thumbFor(shown), text);
+    main.addEventListener('click', () => selectTemplate(id));
+
+    const apply = tplEl('button');
+    apply.type = 'button';
+    drawApply(apply, id, false);
+    apply.addEventListener('click', () => applyTemplate(id));
+
+    li.append(main, apply);
+    return li;
 }
 
 /* ---------- the editor */
@@ -2088,8 +2239,86 @@ function fillTemplateForm(template) {
     youtubeTags.render();
     updateCounters();
     drawApply(el('template-apply'), draft.streamTemplateId, true);
+    drawLinkControls();
     const st = applyStates.get(draft.streamTemplateId);
     setTemplateStatus(st && st.message ? st.message : '');
+}
+
+/** The editor's Link icon, Apply both and the "Linked with …" line, for the open template. */
+function drawLinkControls() {
+    const button = el('template-link');
+    const both = el('template-apply-both');
+    const line = el('template-linked');
+    el('template-link-menu').hidden = true;
+    const open = draft && templates.find((t) => t.streamTemplateId === draft.streamTemplateId);
+    if (!open || linkedPlatforms.length < 2) {
+        button.hidden = true;
+        both.hidden = true;
+        line.hidden = true;
+        return;
+    }
+    const partner = partnerOf(open);
+    button.hidden = false;
+    button.innerHTML = TPL_ICON.link;
+    button.classList.toggle('is-on', !!partner);
+    const word = partner ? 'Linked: change or unlink' : 'Link with a template of the other platform';
+    button.title = word;
+    button.setAttribute('aria-label', word);
+    both.hidden = !partner;
+    line.hidden = !partner;
+    if (!partner) return;
+    drawApplyPair(both, open, partner, true);
+    line.innerHTML = TPL_ICON.link;
+    line.appendChild(tplEl('span', 'plan__linkedword', 'Linked with'));
+    const mark = tplEl('span', `plan__linkedmark plan__linkedmark--${partner.platform.toLowerCase()}`);
+    mark.innerHTML = ICON[partner.platform.toLowerCase()] || '';
+    line.append(mark, tplEl('span', 'plan__linkedname', rowLines(partner)[0]));
+}
+
+/** The Link menu: the other platform's templates, the partner ticked, Unlink last. */
+function openLinkMenu(event) {
+    const menu = el('template-link-menu');
+    if (!menu.hidden) { menu.hidden = true; return; }
+    const open = draft && templates.find((t) => t.streamTemplateId === draft.streamTemplateId);
+    if (!open) return;
+    const partner = partnerOf(open);
+    const other = open.platform === 'TWITCH' ? 'YOUTUBE' : 'TWITCH';
+    menu.textContent = '';
+    const choices = templates.filter((t) => t.platform === other);
+    menu.appendChild(tplEl('div', 'plan__menuhead', choices.length
+        ? `Link with a ${PLATFORM_LABELS[other]} template` : `No ${PLATFORM_LABELS[other]} templates yet`));
+    choices.forEach((c) => {
+        const item = tplEl('button', `plan__menuitem plan__menuitem--${other.toLowerCase()}`);
+        item.type = 'button';
+        item.setAttribute('role', 'menuitemradio');
+        const on = !!partner && partner.streamTemplateId === c.streamTemplateId;
+        item.setAttribute('aria-checked', String(on));
+        item.innerHTML = ICON[other.toLowerCase()] || '';
+        const text = tplEl('span', 'plan__menutext');
+        text.appendChild(tplEl('span', null, rowLines(c)[0]));
+        if (!on && c.linkedTemplateId != null) text.appendChild(tplEl('small', null, 'Linked to another: picking moves it here'));
+        item.appendChild(text);
+        if (on) item.insertAdjacentHTML('beforeend', TPL_ICON.check);
+        item.addEventListener('click', () => {
+            menu.hidden = true;
+            if (!on) linkTemplates(open.streamTemplateId, c.streamTemplateId);
+        });
+        menu.appendChild(item);
+    });
+    if (partner) {
+        const item = tplEl('button', 'plan__menuitem');
+        item.type = 'button';
+        item.setAttribute('role', 'menuitem');
+        item.innerHTML = TPL_ICON.x;
+        item.appendChild(tplEl('span', null, 'Unlink'));
+        item.addEventListener('click', () => {
+            menu.hidden = true;
+            linkTemplates(open.streamTemplateId, null);
+        });
+        menu.appendChild(item);
+    }
+    menu.hidden = false;
+    event.stopPropagation();
 }
 
 function selectTemplate(id) {
@@ -2433,6 +2662,11 @@ async function applyTemplate(id) {
 
 function redrawApply(id) {
     renderTemplateList();
+    const open = draft && templates.find((t) => t.streamTemplateId === draft.streamTemplateId);
+    const partner = partnerOf(open);
+    if (open && partner && (partner.streamTemplateId === id || open.streamTemplateId === id)) {
+        drawApplyPair(el('template-apply-both'), open, partner, true);
+    }
     if (draft && draft.streamTemplateId === id) {
         drawApply(el('template-apply'), id, true);
         const st = applyStates.get(id);
@@ -2491,6 +2725,7 @@ async function duplicateTemplate() {
     const copy = wireTemplate(draft);
     delete copy.streamTemplateId;
     delete copy.sortOrder;
+    delete copy.linkedTemplateId;
     const made = await createTemplate(copy, false);
     if (made) setSaveState('saved');
 }
@@ -2510,8 +2745,24 @@ async function deleteTemplate() {
     selectedTemplateId = null;
     fillTemplateForm(null);
     await refreshTemplates(null);
-    undoTemplate = gone;
-    el('template-snack-text').textContent = `Deleted “${rowLines(gone)[0]}”`;
+    showUndo(`Deleted “${rowLines(gone)[0]}”`, async () => {
+        // Back where it was in the list: the old sort order goes with it, and its pair if the partner is still there.
+        const body = wireTemplate(gone);
+        delete body.streamTemplateId;
+        delete body.linkedTemplateId;
+        const made = await createTemplate(body, false);
+        const partner = gone.linkedTemplateId;
+        if (made && partner != null && templates.some((t) => t.streamTemplateId === partner && t.linkedTemplateId == null)) {
+            const result = await window.lbcbot.linkStreamTemplate(made.streamTemplateId, partner);
+            if (result && result.ok) takeLinks(result.data);
+        }
+    });
+}
+
+/** The snack along the bottom, with Undo running `action` (a delete, a link). */
+function showUndo(text, action) {
+    undoTemplate = action;
+    el('template-snack-text').textContent = text;
     el('template-snack').hidden = false;
     clearTimeout(undoTimer);
     undoTimer = setTimeout(hideUndo, UNDO_MS);
@@ -2523,14 +2774,10 @@ function hideUndo() {
     undoTemplate = null;
 }
 
-async function undoDelete() {
-    const gone = undoTemplate;
+async function undoLast() {
+    const action = undoTemplate;
     hideUndo();
-    if (!gone) return;
-    // Back where it was in the list: the old sort order goes with it.
-    const body = wireTemplate(gone);
-    delete body.streamTemplateId;
-    await createTemplate(body, false);
+    if (action) await action();
 }
 
 async function refreshTemplates(selectId) {
@@ -2563,9 +2810,14 @@ function wireTemplates() {
     document.addEventListener('click', (event) => {
         const menu = el('template-new-menu');
         if (!menu.hidden && !menu.contains(event.target)) menu.hidden = true;
+        const linkMenu = el('template-link-menu');
+        if (!linkMenu.hidden && !linkMenu.contains(event.target)) linkMenu.hidden = true;
     });
     document.addEventListener('keydown', (event) => {
-        if (event.key === 'Escape') el('template-new-menu').hidden = true;
+        if (event.key === 'Escape') {
+            el('template-new-menu').hidden = true;
+            el('template-link-menu').hidden = true;
+        }
     });
 
     el('tw-title').addEventListener('input', (e) => editDraft({ twitchTitle: e.target.value.replace(/\n/g, ' ') }));
@@ -2598,7 +2850,17 @@ function wireTemplates() {
     el('template-apply').addEventListener('click', () => { if (draft) applyTemplate(draft.streamTemplateId); });
     el('template-duplicate').addEventListener('click', duplicateTemplate);
     el('template-delete').addEventListener('click', deleteTemplate);
-    el('template-undo').addEventListener('click', undoDelete);
+    el('template-undo').addEventListener('click', undoLast);
+    el('template-link').addEventListener('click', openLinkMenu);
+    el('template-apply-both').addEventListener('click', () => {
+        const open = draft && templates.find((t) => t.streamTemplateId === draft.streamTemplateId);
+        const partner = partnerOf(open);
+        if (partner) applyPair(open, partner);
+    });
+    el('template-linked').addEventListener('click', () => {
+        const partner = partnerOf(draft && templates.find((t) => t.streamTemplateId === draft.streamTemplateId));
+        if (partner) selectTemplate(partner.streamTemplateId);
+    });
 
     // Leaving the pane or the app saves what is waiting.
     window.addEventListener('beforeunload', () => { flushSave(); });
