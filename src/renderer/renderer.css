@@ -55,7 +55,6 @@ h3 { margin: 0; font-size: 14px; font-weight: 600; }
 }
 
 .nav__brand { padding: 0 8px; }
-.nav__sub { margin: 3px 0 0; color: var(--muted); font-size: 11.5px; line-height: 1.35; }
 
 .nav__items { display: flex; flex-direction: column; gap: 2px; }
 
@@ -1046,24 +1045,8 @@ button:focus-visible { outline: 2px solid rgba(var(--accent-rgb), 0.6); outline-
 .plan__edplatform--twitch { color: var(--twitch); }
 .plan__edplatform--youtube { color: var(--youtube); }
 .plan__edplatform[hidden] { display: none; }
-/* The name reads as the heading; it shows it is a field only on hover and focus. */
-.plan__nameinput {
-    flex: 1 1 auto;
-    min-width: 0;
-    padding: 4px 8px;
-    border: 0;
-    border-radius: 6px;
-    background: transparent;
-    color: #fff;
-    font: inherit;
-    font-size: 14px;
-    font-weight: 700;
-}
-.plan__nameinput:hover { background: rgba(255, 255, 255, 0.05); }
-.plan__nameinput:focus { outline: none; background: var(--plan-field); }
-.plan__nameinput::placeholder { color: var(--faint); }
 /* Autosave's state: a fixed 18px slot, so nothing beside it moves when it appears. */
-.plan__save { display: inline-flex; flex: 0 0 18px; align-items: center; justify-content: center; height: 18px; margin-right: 2px; }
+.plan__save { display: inline-flex; flex: 0 0 18px; margin-left: auto; align-items: center; justify-content: center; height: 18px; margin-right: 2px; }
 .plan__save svg { width: 13px; height: 13px; }
 .plan__save.is-saving::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--muted); opacity: 0.8; }
 .plan__save.is-saved { color: var(--on); }

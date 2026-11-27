@@ -30,13 +30,12 @@
             <span class="brand-mark"><img class="brand-mark__img" src="../assets/brand-mark.png" alt="" /></span>
             <div>
                 <h1>LBCBot</h1>
-                <p class="nav__sub">Keep this open while you stream</p>
             </div>
         </div>
 
         <!-- data-pane maps to a .pane id below; the renderer wires these generically. -->
         <nav class="nav__items">
-            <button type="button" class="nav__item" data-pane="templates"><svg class="nav__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg><span>Stream setup</span></button>
+            <button type="button" class="nav__item" data-pane="templates"><svg class="nav__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg><span>Stream Planner</span></button>
             <button type="button" class="nav__item is-active" data-pane="dashboards"><svg class="nav__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/></svg><span>Dashboards</span></button>
             <button type="button" class="nav__item" data-pane="overlays"><svg class="nav__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg><span>Overlays</span></button>
             <button type="button" class="nav__item" data-pane="activity"><svg class="nav__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg><span>Activity</span></button>
@@ -90,11 +89,9 @@
         <!-- ------------------------------------------------------------- Templates -->
         <section class="pane" id="pane-templates">
             <header class="pane__head">
-                <span class="pane__mark"><svg class="pane__mark-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg></span>
-                <h2>Stream setup</h2>
-                <p class="pane__sub">
-                    Your title, category and tags, ready to apply in one click.
-                </p>
+                <span class="pane__mark"><svg class="pane__mark-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg></span>
+                <h2>Stream Planner</h2>
+                <p class="pane__sub">Make livestream templates that can be applied to Twitch and YouTube.</p>
             </header>
 
             <!--
@@ -119,15 +116,13 @@
                 <div class="plan__editor" id="template-editor">
                     <!-- Nothing open: the editor says how to start rather than showing an empty form. -->
                     <div class="plan__empty" id="template-empty">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
                         <p>Pick a template to edit it, or make a new one.</p>
                     </div>
 
                     <div class="plan__edbody" id="template-edbody" hidden>
                         <div class="plan__edhead">
                             <span class="plan__edplatform" id="template-platform"></span>
-                            <input id="template-name" class="plan__nameinput" type="text" spellcheck="false"
-                                   maxlength="80" placeholder="Untitled" aria-label="Template name" />
                             <!-- Autosave's state, in place: a dot while saving, a tick once saved, red if it failed. -->
                             <span class="plan__save" id="template-save-state" aria-live="polite"></span>
                             <button type="button" class="plan__icon" id="template-duplicate" title="Duplicate"
@@ -146,7 +141,7 @@
                                 <div class="plan__field plan__field--wide">
                                     <div class="plan__label"><label for="tw-title">Title</label>
                                         <span class="plan__counter" id="tw-title-count"></span></div>
-                                    <textarea id="tw-title" rows="2" maxlength="140" placeholder="Keep current title"></textarea>
+                                    <textarea id="tw-title" rows="2" maxlength="140"></textarea>
                                 </div>
                                 <div class="plan__field plan__field--wide">
                                     <div class="plan__label"><label for="tw-category">Category</label></div>
@@ -159,7 +154,7 @@
                                         <div class="plan__catsearch" id="tw-category-search">
                                             <svg class="plan__catglass" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
                                             <input id="tw-category" type="text" autocomplete="off" spellcheck="false"
-                                                   placeholder="Keep current category" role="combobox"
+                                                   role="combobox"
                                                    aria-expanded="false" aria-controls="tw-category-menu" />
                                             <span class="plan__spin" id="tw-category-spin" hidden></span>
                                         </div>
@@ -177,11 +172,11 @@
                                 <div class="plan__field plan__field--wide">
                                     <div class="plan__label"><label for="yt-title">Title</label>
                                         <span class="plan__counter" id="yt-title-count"></span></div>
-                                    <textarea id="yt-title" rows="2" maxlength="100" placeholder="Keep current title"></textarea>
+                                    <textarea id="yt-title" rows="2" maxlength="100"></textarea>
                                 </div>
                                 <div class="plan__field plan__field--wide">
                                     <div class="plan__label"><label for="yt-description">Description</label></div>
-                                    <textarea id="yt-description" rows="4" placeholder="Keep current description"></textarea>
+                                    <textarea id="yt-description" rows="4"></textarea>
                                 </div>
                                 <div class="plan__field">
                                     <div class="plan__label"><label for="yt-category">Category</label></div>
@@ -189,7 +184,7 @@
                                 </div>
                                 <div class="plan__field">
                                     <div class="plan__label"><label for="yt-language">Language</label></div>
-                                    <input id="yt-language" type="text" placeholder="Keep current" spellcheck="false" />
+                                    <input id="yt-language" type="text" spellcheck="false" />
                                 </div>
                                 <div class="plan__field plan__field--wide">
                                     <div class="plan__label"><label for="yt-tags-input">Tags</label>

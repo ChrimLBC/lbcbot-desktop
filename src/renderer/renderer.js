@@ -1814,7 +1814,7 @@ async function refreshPlatforms() {
  * blank entry means "leave whatever the broadcast already has".
  */
 const YT_CATEGORIES = [
-    ['', 'Keep current'],
+    ['', ''],
     ['20', 'Gaming'],
     ['24', 'Entertainment'],
     ['22', 'People & Blogs'],
@@ -1839,7 +1839,7 @@ const UNDO_MS = 7000;
 
 // Static markup of our own (never user data), so innerHTML is safe for these.
 const TPL_ICON = {
-    play: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5.5v13a1 1 0 0 0 1.5.86l10.4-6.5a1 1 0 0 0 0-1.72L9.5 4.64A1 1 0 0 0 8 5.5z"/></svg>',
+    send: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>',
     check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>',
     cross: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>',
     spin: '<span class="plan__spin" aria-hidden="true"></span>',
@@ -1853,14 +1853,27 @@ const boxArtUrl = (gameId, w, h) => (gameId ? `https://static-cdn.jtvnw.net/ttv-
 
 const csvToList = (csv) => String(csv || '').split(',').map((v) => v.trim()).filter(Boolean);
 
-/** The one line under a template's name: what it sets, the same words as the website's list. */
-function summaryOf(t) {
-    if (t.platform === 'YOUTUBE') {
-        return [ytCategoryName(t.youtubeCategoryId), t.youtubeTitle].filter(Boolean).join(' · ');
-    }
-    const category = t.twitchCategory && t.twitchCategoryYear ? `${t.twitchCategory} (${t.twitchCategoryYear})` : t.twitchCategory;
-    return [category, t.twitchTitle].filter(Boolean).join(' · ');
+/** A template's game/category, as the website words it. */
+function categoryOf(t) {
+    if (t.platform === 'YOUTUBE') return ytCategoryName(t.youtubeCategoryId) || '';
+    return t.twitchCategory && t.twitchCategoryYear ? `${t.twitchCategory} (${t.twitchCategoryYear})` : (t.twitchCategory || '');
 }
+
+const titleOf = (t) => String((t.platform === 'YOUTUBE' ? t.youtubeTitle : t.twitchTitle) || '').trim();
+
+/**
+ * Templates have no name of their own here (Chris, 2026-11-27: "the title and game of the stream is enough"): a row
+ * reads as its title over its game, or the game alone until a title is typed.
+ */
+function rowLines(t) {
+    const title = titleOf(t);
+    const category = categoryOf(t);
+    if (title) return [title, category];
+    return [category || 'Untitled', ''];
+}
+
+/** The name the server still stores (the website's list shows it): the title, else the game. */
+const derivedName = (t) => Array.from(titleOf(t) || categoryOf(t) || 'Untitled').slice(0, 80).join('');
 
 /** The reason the server gave (a 400 is {"message"}), or a plain fallback. */
 function reasonOf(result, fallback) {
@@ -1943,7 +1956,7 @@ function drawApply(button, id, labelled) {
     const state = st ? st.state : 'idle';
     button.className = `plan__apply${labelled ? ' plan__apply--label' : ''} is-${state}`;
     button.disabled = state === 'busy';
-    const icon = { idle: TPL_ICON.play, busy: TPL_ICON.spin, ok: TPL_ICON.check, error: TPL_ICON.cross }[state];
+    const icon = { idle: TPL_ICON.send, busy: TPL_ICON.spin, ok: TPL_ICON.check, error: TPL_ICON.cross }[state];
     button.innerHTML = icon;
     if (labelled) button.appendChild(tplEl('span', null, state === 'ok' ? 'Applied' : 'Apply'));
     const word = { idle: 'Apply to your channel now', busy: 'Applying…', ok: 'Applied', error: 'Could not apply' }[state];
@@ -1983,12 +1996,13 @@ function renderTemplateList() {
         const main = tplEl('button', 'plan__rowmain');
         main.type = 'button';
         const text = tplEl('span', 'plan__rowtext');
-        text.appendChild(tplEl('span', 'plan__name', shown.name || 'Untitled'));
+        const [line1, line2] = rowLines(shown);
+        text.appendChild(tplEl('span', 'plan__name', line1));
         const st = applyStates.get(id);
         if (st && st.message) {
             text.appendChild(tplEl('span', 'plan__sub is-error', st.message));
         } else {
-            text.appendChild(tplEl('span', 'plan__sub', summaryOf(shown) || 'Keeps everything as it is'));
+            text.appendChild(tplEl('span', 'plan__sub', line2));
         }
         main.append(thumbFor(shown), text);
         main.addEventListener('click', () => selectTemplate(id));
@@ -2063,7 +2077,6 @@ function fillTemplateForm(template) {
     // One platform linked: no need to say which.
     mark.hidden = linkedPlatforms.length < 2;
 
-    el('template-name').value = draft.name || '';
     el('tw-title').value = draft.twitchTitle || '';
     el('yt-title').value = draft.youtubeTitle || '';
     el('yt-description').value = draft.youtubeDescription || '';
@@ -2102,7 +2115,7 @@ const blankToNull = (v) => {
 function wireTemplate(t) {
     return {
         ...t,
-        name: blankToNull(t.name) || 'Untitled',
+        name: derivedName(t),
         twitchTitle: blankToNull(t.twitchTitle),
         twitchCategory: blankToNull(t.twitchCategory),
         twitchCategoryId: blankToNull(t.twitchCategoryId),
@@ -2333,7 +2346,7 @@ function tagBox({ boxId, field, clean, limitReached }) {
             chip.appendChild(remove);
             box.appendChild(chip);
         });
-        input.placeholder = list().length ? '' : 'Keep current tags';
+        input.placeholder = '';
         box.appendChild(input);
     }
 
@@ -2427,16 +2440,15 @@ function redrawApply(id) {
     }
 }
 
-async function createTemplate(body, focusName) {
+async function createTemplate(body, focusTitle) {
     const result = await window.lbcbot.saveStreamTemplate(null, body);
     if (!result || !result.ok || !result.data) {
         setTemplateStatus(reasonOf(result, 'Could not make the template — see Activity.'));
         return null;
     }
     await refreshTemplates(result.data.streamTemplateId);
-    if (focusName) {
-        el('template-name').focus();
-        el('template-name').select();
+    if (focusTitle) {
+        el(result.data.platform === 'YOUTUBE' ? 'yt-title' : 'tw-title').focus();
     }
     return result.data;
 }
@@ -2446,7 +2458,7 @@ function onNewTemplate(event, anchor) {
     const menu = el('template-new-menu');
     if (linkedPlatforms.length < 2) {
         flushSave();
-        createTemplate({ name: 'New template', platform: linkedPlatforms[0] || 'TWITCH' }, true);
+        createTemplate({ name: 'Untitled', platform: linkedPlatforms[0] || 'TWITCH' }, true);
         return;
     }
     if (!menu.hidden) {
@@ -2463,7 +2475,7 @@ function onNewTemplate(event, anchor) {
         item.addEventListener('click', () => {
             menu.hidden = true;
             flushSave();
-            createTemplate({ name: 'New template', platform }, true);
+            createTemplate({ name: 'Untitled', platform }, true);
         });
         menu.appendChild(item);
     });
@@ -2479,7 +2491,6 @@ async function duplicateTemplate() {
     const copy = wireTemplate(draft);
     delete copy.streamTemplateId;
     delete copy.sortOrder;
-    copy.name = `${draft.name || 'Untitled'} (copy)`.slice(0, 80);
     const made = await createTemplate(copy, false);
     if (made) setSaveState('saved');
 }
@@ -2500,7 +2511,7 @@ async function deleteTemplate() {
     fillTemplateForm(null);
     await refreshTemplates(null);
     undoTemplate = gone;
-    el('template-snack-text').textContent = `Deleted “${gone.name || 'Untitled'}”`;
+    el('template-snack-text').textContent = `Deleted “${rowLines(gone)[0]}”`;
     el('template-snack').hidden = false;
     clearTimeout(undoTimer);
     undoTimer = setTimeout(hideUndo, UNDO_MS);
@@ -2557,11 +2568,10 @@ function wireTemplates() {
         if (event.key === 'Escape') el('template-new-menu').hidden = true;
     });
 
-    el('template-name').addEventListener('input', (e) => editDraft({ name: e.target.value }));
     el('tw-title').addEventListener('input', (e) => editDraft({ twitchTitle: e.target.value.replace(/\n/g, ' ') }));
     el('yt-title').addEventListener('input', (e) => editDraft({ youtubeTitle: e.target.value.replace(/\n/g, ' ') }));
     // A title is one line: Enter would put a newline in it, so it does nothing.
-    ['tw-title', 'yt-title', 'template-name'].forEach((id) => {
+    ['tw-title', 'yt-title'].forEach((id) => {
         el(id).addEventListener('keydown', (e) => { if (e.key === 'Enter') e.preventDefault(); });
     });
     el('yt-description').addEventListener('input', (e) => editDraft({ youtubeDescription: e.target.value }));
