@@ -37,6 +37,29 @@ const { app } = require('electron');
  * "ready", shows a Restart button, and the update otherwise applies the next time the app quits normally.
  */
 
+/**
+ * Where the updater reads `latest.yml` and the installer. `releases/latest/download/<asset>` is a plain redirect to the
+ * newest release's file, and the installer's name carries no version (`LBCBot-Setup.exe`), so both always resolve.
+ *
+ * <p>Not the `github` provider from package.json: that one first loads the HTML page `releases/latest` to learn the
+ * newest tag, and that page 504'd for a whole afternoon (2026-11-27) while the release files downloaded fine — every
+ * installed copy failed its update check over a page it does not need.
+ */
+const FEED_URL = 'https://github.com/ChrimLBC/lbcbot-desktop/releases/latest/download';
+
+/**
+ * The one short line the pane shows for a failed check. The full error goes to the log; the pane only needs to say
+ * it is not the user's fault and that trying later works. Anything that looks like the network or GitHub being down
+ * says GitHub by name, since that is the only thing the user could check.
+ */
+function friendlyUpdateError(error) {
+    const text = String((error && (error.code || '') + ' ' + (error.message || '')) || error || '');
+    const network = /\b(5\d\d|429)\b|ETIMEDOUT|ECONNRESET|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|ENETUNREACH|socket hang up|net::ERR_|timed? ?out|Gateway/i;
+    return network.test(text)
+        ? "Couldn't reach GitHub to check for updates. Try again in a few minutes."
+        : "Couldn't check for updates. Try again later.";
+}
+
 /** Six hours. Long enough to be invisible, short enough that a fix lands the same stream day. */
 const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
@@ -83,6 +106,7 @@ class Updater {
         // eslint-disable-next-line global-require
         const { autoUpdater } = require('electron-updater');
         this.updater = autoUpdater;
+        autoUpdater.setFeedURL({ provider: 'generic', url: FEED_URL });
 
         autoUpdater.autoDownload = true;
         // Apply on the next normal quit as well as on the Restart button. Quitting is already the user ending
@@ -111,7 +135,7 @@ class Updater {
             // Never fatal and never a dialog: a failed check is not the user's problem and the app works fine
             // without it. It goes in the log and the pane, and the next check tries again.
             this.log(`Could not check for updates: ${(error && error.message) || error}`);
-            this.setStatus({ state: 'error', error: (error && error.message) || String(error) });
+            this.setStatus({ state: 'error', error: friendlyUpdateError(error) });
         });
 
         this.check();
@@ -145,4 +169,4 @@ class Updater {
     }
 }
 
-module.exports = { Updater };
+module.exports = { Updater, friendlyUpdateError, FEED_URL };

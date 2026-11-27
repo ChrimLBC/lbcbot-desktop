@@ -132,7 +132,7 @@ function applyUpdateStatus(status) {
             line.textContent = status.reason || 'Automatic updates are not available here.';
             break;
         case 'error':
-            line.textContent = `Could not check for updates: ${status.error}`;
+            line.textContent = status.error || "Couldn't check for updates. Try again later.";
             break;
         default:
             line.textContent = '';
