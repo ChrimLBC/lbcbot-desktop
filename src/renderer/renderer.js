@@ -1306,105 +1306,457 @@ function refreshAccountLists() {
     refreshTemplates();
 }
 
-async function refreshOverlays() {
-    const list = el('overlay-list');
-    list.textContent = '';
+/* ------------------------------------------------------------------ overlays */
 
-    const [overlays, scenes] = await Promise.all([window.lbcbot.getOverlays(), window.lbcbot.getScenes()]);
+/*
+ * A widget's tag colour, as the website's overlay editor draws it (overlay/widgetColor.js): the colour the user
+ * picked, else a stable hue from its id, golden-angle spread so neighbouring ids don't look alike.
+ */
+function overlayWidgetColor(widget, index) {
+    const key = `${widget && widget.overlayWidgetId != null ? widget.overlayWidgetId : index}`;
+    let hash = 0;
+    for (let i = 0; i < key.length; i += 1) hash = (hash * 131 + key.charCodeAt(i)) >>> 0;
+    const h = (hash * 137) % 360;
+    const a = 0.7 * Math.min(0.55, 0.45);
+    const channel = (n) => {
+        const k = (n + h / 30) % 12;
+        const c = 0.55 - a * Math.max(-1, Math.min(k - 3, 9 - k, 1));
+        return Math.round(255 * c).toString(16).padStart(2, '0');
+    };
+    const own = `#${channel(0)}${channel(8)}${channel(4)}`;
+    // Only a plain hex colour is used: the value lands in a CSS custom property.
+    return widget && typeof widget.color === 'string' && /^#[0-9a-f]{3,8}$/i.test(widget.color) ? widget.color : own;
+}
 
-    const sceneSelect = el('scene-select');
-    const previous = sceneSelect.value;
-    sceneSelect.textContent = '';
-    (scenes || []).forEach((scene) => {
-        const option = document.createElement('option');
-        option.value = scene;
-        option.textContent = scene;
-        sceneSelect.appendChild(option);
-    });
-    if (previous && (scenes || []).includes(previous)) sceneSelect.value = previous;
-    if (!scenes || scenes.length === 0) {
-        const option = document.createElement('option');
-        option.value = '';
-        option.textContent = 'Connect to OBS to list scenes';
-        sceneSelect.appendChild(option);
-    }
+const PLUS_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>';
+const TICK_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>';
+const SCENE_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="4" width="20" height="16" rx="2"/></svg>';
+const SETTINGS_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>';
 
-    if (!overlays || overlays.length === 0) {
-        const li = document.createElement('li');
-        li.className = 'muted';
-        li.textContent = 'No overlays found. Connect to LBCBot, or create one on the website.';
-        list.appendChild(li);
-        return;
-    }
+/** The scene menu's owner (the button that opened it), or null while closed. */
+let sceneMenuFor = null;
 
-    overlays.forEach((overlay) => {
-        const li = document.createElement('li');
+function closeSceneMenu() {
+    if (!sceneMenuFor) return;
+    sceneMenuFor.setAttribute('aria-expanded', 'false');
+    sceneMenuFor = null;
+    el('scene-menu').hidden = true;
+}
 
-        const name = document.createElement('span');
-        name.className = 'list__name';
-        // textContent, never innerHTML — an overlay name is user data.
-        name.textContent = overlay.name || `Overlay ${overlay.overlayId}`;
+/** Put the menu under the button, right edges lined up; above it when there is no room below. */
+function placeSceneMenu(button) {
+    const menu = el('scene-menu');
+    const r = button.getBoundingClientRect();
+    const h = menu.offsetHeight;
+    const below = r.bottom + 6 + h <= window.innerHeight - 8;
+    menu.style.top = `${below ? r.bottom + 6 : Math.max(8, r.top - 6 - h)}px`;
+    menu.style.left = `${Math.max(8, r.right - menu.offsetWidth)}px`;
+}
 
-        const size = document.createElement('span');
-        size.className = 'list__meta';
-        size.textContent = `${overlay.canvasWidth || 1920}×${overlay.canvasHeight || 1080}`;
-
-        const button = document.createElement('button');
-        // A row action, so the quiet outline — the one filled button per surface is reserved for the main action.
-        button.textContent = 'Add to OBS';
-        button.addEventListener('click', async () => {
-            button.disabled = true;
-            button.textContent = 'Adding…';
-            const result = await window.lbcbot.addOverlayToObs({
-                overlayId: overlay.overlayId,
-                overlayName: overlay.name,
-                sceneName: sceneSelect.value,
-                width: overlay.canvasWidth,
-                height: overlay.canvasHeight,
-            });
-            button.textContent = result.ok ? 'Added' : 'Failed';
-            if (!result.ok) appendLog(`Could not add overlay: ${result.error}`);
-            setTimeout(() => {
-                button.disabled = false;
-                button.textContent = 'Add to OBS';
-            }, 2000);
-        });
-
-        li.append(name, size, button);
-        list.appendChild(li);
-    });
+function menuItem(svg, text, onPick) {
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.className = 'plan__menuitem';
+    item.setAttribute('role', 'menuitem');
+    item.innerHTML = svg; // a constant
+    const label = document.createElement('span');
+    label.className = 'scene-menu__label';
+    label.textContent = text; // a scene name is user data
+    item.appendChild(label);
+    item.addEventListener('click', onPick);
+    return item;
 }
 
 /**
- * Populate the dashboard picker.
+ * Open the scene menu for one overlay. Scenes are read from OBS as it opens (a local call, no server cost), so it is
+ * never stale: a scene made a minute ago is there, and OBS going away shows as the way to reconnect.
+ */
+async function openSceneMenu(button, onScene, fromKeyboard) {
+    if (sceneMenuFor === button) {
+        closeSceneMenu();
+        return;
+    }
+    closeSceneMenu();
+    sceneMenuFor = button;
+    button.setAttribute('aria-expanded', 'true');
+    const scenes = await window.lbcbot.getScenes();
+    if (sceneMenuFor !== button) return; // closed, or another opened, while OBS answered
+
+    const menu = el('scene-menu');
+    menu.textContent = '';
+    if (!scenes || scenes.length === 0) {
+        const note = document.createElement('p');
+        note.className = 'scene-menu__note';
+        note.textContent = 'OBS isn’t connected';
+        menu.append(note, menuItem(SETTINGS_SVG, 'OBS settings', () => {
+            closeSceneMenu();
+            showPane('settings');
+        }));
+    } else {
+        scenes.forEach((scene) => {
+            menu.appendChild(menuItem(SCENE_SVG, scene, () => {
+                closeSceneMenu();
+                onScene(scene);
+            }));
+        });
+    }
+    menu.hidden = false;
+    placeSceneMenu(button);
+    // From the keyboard, focus moves into the menu; a mouse open leaves no ring on an item nobody picked.
+    const first = menu.querySelector('button');
+    if (first && fromKeyboard) first.focus();
+}
+
+/** One overlay card: its widgets in miniature, name and size, and Add to scene. */
+function overlayCard(overlay) {
+    const name = overlay.name || `Overlay ${overlay.overlayId}`;
+    const W = overlay.canvasWidth || 1920;
+    const H = overlay.canvasHeight || 1080;
+    const widgets = (Array.isArray(overlay.widgets) ? overlay.widgets : [])
+        .map((w, i) => ({ w, i }))
+        .filter(({ w }) => w && w.visible !== false);
+
+    const card = document.createElement('div');
+    card.className = 'dash-list__card ovl-card';
+
+    const thumb = document.createElement('div');
+    thumb.className = 'dash-list__thumb';
+    thumb.setAttribute('aria-hidden', 'true');
+    if (widgets.length) {
+        [...widgets].sort((a, b) => (a.w.zIndex || 0) - (b.w.zIndex || 0)).forEach(({ w, i }) => {
+            const tile = document.createElement('div');
+            tile.className = 'dash-list__tile ovl-tile';
+            const clamp = (v) => Math.max(0, Math.min(100, v));
+            const left = clamp(((w.posX || 0) / W) * 100);
+            const top = clamp(((w.posY || 0) / H) * 100);
+            tile.style.left = `${left}%`;
+            tile.style.top = `${top}%`;
+            tile.style.width = `${Math.min(100 - left, ((w.width || 0) / W) * 100)}%`;
+            tile.style.height = `${Math.min(100 - top, ((w.height || 0) / H) * 100)}%`;
+            tile.style.setProperty('--tile-color', overlayWidgetColor(w, i));
+            thumb.appendChild(tile);
+        });
+    } else {
+        const empty = document.createElement('div');
+        empty.className = 'dash-list__thumb-empty';
+        empty.textContent = 'Empty';
+        thumb.appendChild(empty);
+    }
+
+    const foot = document.createElement('div');
+    foot.className = 'dash-list__foot';
+    const titles = document.createElement('div');
+    titles.className = 'dash-list__titles';
+    const nameEl = document.createElement('div');
+    nameEl.className = 'dash-list__name';
+    nameEl.textContent = name; // user data: never markup
+    nameEl.title = name;
+    const meta = document.createElement('div');
+    meta.className = 'dash-list__meta';
+    const metaText = `${W}×${H} · ${widgets.length === 1 ? '1 widget' : `${widgets.length} widgets`}`;
+    meta.textContent = metaText;
+    titles.append(nameEl, meta);
+
+    const add = document.createElement('button');
+    add.type = 'button';
+    add.className = 'ovl-add';
+    add.title = 'Add to scene';
+    add.setAttribute('aria-haspopup', 'menu');
+    add.setAttribute('aria-expanded', 'false');
+    const idle = () => {
+        add.innerHTML = `${PLUS_SVG}<span>Add to scene</span>`; // constants
+        add.classList.remove('is-done', 'is-bad');
+        add.disabled = false;
+    };
+    idle();
+
+    let resetTimer = null;
+    add.addEventListener('click', (event) => openSceneMenu(add, async (sceneName) => {
+        clearTimeout(resetTimer);
+        add.disabled = true;
+        add.querySelector('span').textContent = 'Adding…';
+        const result = await window.lbcbot.addOverlayToObs({
+            overlayId: overlay.overlayId,
+            overlayName: overlay.name,
+            sceneName,
+            width: overlay.canvasWidth,
+            height: overlay.canvasHeight,
+        });
+        // Feedback on the button pressed; a failure's reason on the card's own second line, where it is seen.
+        if (result && result.ok) {
+            add.innerHTML = `${TICK_SVG}<span>Added</span>`;
+            add.classList.add('is-done');
+        } else {
+            const why = (result && result.error) || 'unknown error';
+            add.querySelector('span').textContent = 'Failed';
+            add.classList.add('is-bad');
+            meta.textContent = `Couldn’t add: ${why}`;
+            meta.classList.add('is-bad');
+            meta.title = why;
+            appendLog(`Could not add overlay: ${why}`);
+        }
+        resetTimer = setTimeout(() => {
+            idle();
+            meta.textContent = metaText;
+            meta.classList.remove('is-bad');
+            meta.title = '';
+        }, result && result.ok ? 2000 : 5000);
+    }, event.detail === 0));
+
+    foot.append(titles, add);
+    card.append(thumb, foot);
+    return card;
+}
+
+async function refreshOverlays() {
+    closeSceneMenu();
+    const overlays = await window.lbcbot.getOverlays();
+    const rows = Array.isArray(overlays) ? overlays : [];
+    const list = el('overlay-list');
+    list.replaceChildren(...rows.map(overlayCard));
+    list.hidden = rows.length === 0;
+    el('overlay-empty').hidden = rows.length > 0;
+    // Offline, the list is empty because it can't be read (coming online re-reads it).
+    el('overlay-empty-title').textContent = lbcOnline ? 'No overlays yet' : 'Connect to see your overlays';
+}
+
+/** The scene menu closes like every popover here: outside click, Esc, or the page moving under it. */
+function wireSceneMenu() {
+    document.addEventListener('mousedown', (e) => {
+        if (sceneMenuFor && !el('scene-menu').contains(e.target) && !sceneMenuFor.contains(e.target)) closeSceneMenu();
+    });
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && sceneMenuFor) {
+            const owner = sceneMenuFor;
+            closeSceneMenu();
+            owner.focus();
+        }
+    });
+    el('pane-overlays').addEventListener('scroll', closeSceneMenu);
+    window.addEventListener('resize', () => { if (sceneMenuFor) placeSceneMenu(sceneMenuFor); });
+}
+
+/* ------------------------------------------------------------------ dashboards */
+
+/*
+ * Card-type icons as inline SVG bodies (24×24, stroked): the CSP allows no icon font, so these stand in for the
+ * PrimeIcons the website draws in each tile, one per concept (pi-comments → speech bubbles and so on).
+ */
+const DASH_ICONS = {
+    box: '<path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>',
+    clone: '<rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',
+    headphones: '<path d="M3 18v-6a9 9 0 0 1 18 0v6"/><path d="M21 19a2 2 0 0 1-2 2h-1v-6h3zM3 19a2 2 0 0 0 2 2h1v-6H3z"/>',
+    gift: '<polyline points="20 12 20 22 4 22 4 12"/><rect x="2" y="7" width="20" height="5"/><line x1="12" y1="22" x2="12" y2="7"/><path d="M12 7H7.5a2.5 2.5 0 0 1 0-5C11 2 12 7 12 7zM12 7h4.5a2.5 2.5 0 0 0 0-5C13 2 12 7 12 7z"/>',
+    question: '<circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/>',
+    megaphone: '<path d="M3 11v2a1 1 0 0 0 1 1h3l5 4V6L7 10H4a1 1 0 0 0-1 1z"/><path d="M16 8a5 5 0 0 1 0 8"/><path d="M19 5a9 9 0 0 1 0 14"/>',
+    video: '<polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2"/>',
+    desktop: '<rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>',
+    chart: '<polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>',
+    sliders: '<line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/>',
+    list: '<line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/>',
+    comments: '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
+    users: '<path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
+    slash: '<rect x="3" y="3" width="18" height="18" rx="3"/><line x1="15" y1="7" x2="9" y2="17"/>',
+    twitch: '<path d="M21 2H3v16h5v4l4-4h5l4-4V2zM11 11V7M16 11V7"/>',
+    pencil: '<path d="M17 3a2.83 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/>',
+    calendar: '<rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>',
+    send: '<line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/>',
+    play: '<polygon points="5 3 19 12 5 21 5 3"/>',
+    wallet: '<rect x="2" y="5" width="20" height="14" rx="2"/><path d="M16 12h2"/><path d="M2 9h20"/>',
+    clock: '<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>',
+    link: '<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>',
+};
+
+/*
+ * Each card type's colour and icon, from the website's dashboardWidgetMeta, so a card's miniature here matches the
+ * one on the website's dashboard list. A type missing here draws a box in the muted ink, as it does there.
+ */
+const DASH_CARD_LOOK = {
+    WIDGET_GROUP: ['#94a3b8', 'clone'], MEDIA_QUEUE: ['#22d3ee', 'headphones'], GIVEAWAY: ['#f87171', 'gift'],
+    TRIVIA: ['#fb923c', 'question'], ALERTS: ['#f472b6', 'megaphone'], STREAM_STATUS: ['#a78bfa', 'video'],
+    STREAM_PREVIEW: ['#f43f5e', 'desktop'], STAT_TILES: ['#34d399', 'chart'], METERS: ['#60a5fa', 'sliders'],
+    LEADERBOARD: ['#a3e635', 'list'], CHAT: ['#818cf8', 'comments'], VIEWERS: ['#a78bfa', 'users'],
+    QUICK_COMMANDS: ['#fbbf24', 'slash'], TWITCH_ACTIONS: ['#a970ff', 'twitch'], GUEST_STAR: ['#a970ff', 'users'],
+    TWITCH_BACKSTAGE: ['#9146ff', 'twitch'], STREAM_INFO: ['#c4b5fd', 'pencil'], STREAM_PLANNER: ['#a78bfa', 'calendar'],
+    SHOUTOUT: ['#2dd4bf', 'send'], TEST_ALERT: ['#e879f9', 'play'], CURRENCY: ['#fcd34d', 'wallet'],
+    NOTES: ['#94a3b8', 'pencil'], CLOCK_TIMER: ['#f59e0b', 'clock'], LINKS: ['#c084fc', 'link'],
+};
+
+/**
+ * A dashboard's tiles as fractions of its canvas, for the miniature.
+ *
+ * The layout blob holds a tiling tree (`{ id }` leaves, `{ dir, children, sizes }` splits whose sizes are fractions
+ * summing to 1). This walks the fractions only: the website also applies each card's minimum size, which moves a
+ * divider a few pixels at most, invisible at thumbnail scale and not worth porting its whole layout engine.
+ * A dashboard saved before tiling has no tree, so its cards' stored rectangles are used as they are.
+ * A tab (`groupId`) is not a tile: its group is, drawn in the colour of the tab it opens on, with "+N" for the rest.
+ */
+function dashboardTiles(row) {
+    let parsed = null;
+    try {
+        parsed = row.layoutConfig ? JSON.parse(row.layoutConfig) : null;
+    } catch (_) {
+        parsed = null;
+    }
+    const widgets = (parsed && Array.isArray(parsed.widgets) ? parsed.widgets : [])
+        .map((w, i) => ({ ...w, id: w.id || `w${i}` }));
+    const byId = {};
+    widgets.forEach((w) => { byId[w.id] = w; });
+
+    const rects = {};
+    const tree = parsed && parsed.tree;
+    if (tree) {
+        const visit = (node, x, y, w, h) => {
+            if (!node) return;
+            if (!(node.dir && Array.isArray(node.children))) {
+                rects[node.id] = { x, y, w, h };
+                return;
+            }
+            const n = node.children.length;
+            const sizes = Array.isArray(node.sizes) && node.sizes.length === n
+                ? node.sizes : node.children.map(() => 1 / n);
+            const total = sizes.reduce((a, b) => a + (Number(b) || 0), 0) || 1;
+            let at = 0;
+            node.children.forEach((c, i) => {
+                const f = (Number(sizes[i]) || 0) / total;
+                if (node.dir === 'row') visit(c, x + at * w, y, f * w, h);
+                else visit(c, x, y + at * h, w, f * h);
+                at += f;
+            });
+        };
+        visit(tree, 0, 0, 1, 1);
+    } else {
+        const W = row.canvasWidth || 1600;
+        const H = row.canvasHeight || 900;
+        widgets.filter((w) => w.visible !== false && !w.groupId).forEach((w) => {
+            rects[w.id] = { x: (w.posX || 0) / W, y: (w.posY || 0) / H, w: (w.width || 300) / W, h: (w.height || 200) / H };
+        });
+    }
+
+    const tiles = Object.keys(rects).filter((id) => byId[id]).map((id) => {
+        const w = byId[id];
+        let shown = w;
+        let extra = 0;
+        if (w.widgetType === 'WIDGET_GROUP') {
+            const ids = (w.config && Array.isArray(w.config.memberIds)) ? w.config.memberIds : [];
+            shown = byId[(w.config && w.config.activeId) || ids[0]] || w;
+            extra = Math.max(0, ids.length - 1);
+        }
+        const [color, icon] = DASH_CARD_LOOK[shown.widgetType] || [null, 'box'];
+        return { ...rects[id], color, icon, extra };
+    });
+    const count = widgets.filter((w) => w.widgetType !== 'WIDGET_GROUP').length;
+    return { tiles, count };
+}
+
+/** Open a dashboard window; a refusal (almost always: not connected) shows at the top of the pane. */
+async function openDashboardFromPane(dashboardId) {
+    const status = el('dashboard-status');
+    status.textContent = '';
+    const result = await window.lbcbot.openDashboard(dashboardId);
+    if (result && result.ok === false) {
+        status.textContent = result.error || 'Could not open that dashboard.';
+    }
+}
+
+const POP_OUT_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>';
+
+/** One dashboard card: the miniature, then its name and card count, with the open icon on the right. */
+function dashboardCard(row) {
+    const name = row.name || `Dashboard ${row.dashboardId}`;
+    const { tiles, count } = dashboardTiles(row);
+    const open = () => openDashboardFromPane(row.dashboardId);
+
+    const card = document.createElement('div');
+    card.className = 'dash-list__card';
+    card.setAttribute('role', 'button');
+    card.tabIndex = 0;
+    card.setAttribute('aria-label', `Open ${name}`);
+    card.addEventListener('click', open);
+    card.addEventListener('keydown', (e) => {
+        if (e.target === card && (e.key === 'Enter' || e.key === ' ')) {
+            e.preventDefault();
+            open();
+        }
+    });
+
+    const thumb = document.createElement('div');
+    thumb.className = 'dash-list__thumb';
+    thumb.setAttribute('aria-hidden', 'true');
+    if (tiles.length) {
+        tiles.forEach((t) => {
+            const tile = document.createElement('div');
+            tile.className = 'dash-list__tile';
+            // The CSP forbids style attributes in markup but not CSSOM writes, which is how each position is set.
+            tile.style.left = `${t.x * 100}%`;
+            tile.style.top = `${t.y * 100}%`;
+            tile.style.width = `${t.w * 100}%`;
+            tile.style.height = `${t.h * 100}%`;
+            if (t.color) tile.style.setProperty('--tile-color', t.color);
+            // From the constant table above, never user data.
+            tile.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${DASH_ICONS[t.icon] || DASH_ICONS.box}</svg>`;
+            if (t.extra) {
+                const more = document.createElement('span');
+                more.className = 'dash-list__tile-more';
+                more.textContent = `+${t.extra}`;
+                tile.appendChild(more);
+            }
+            thumb.appendChild(tile);
+        });
+    } else {
+        const empty = document.createElement('div');
+        empty.className = 'dash-list__thumb-empty';
+        empty.textContent = 'Empty';
+        thumb.appendChild(empty);
+    }
+
+    const foot = document.createElement('div');
+    foot.className = 'dash-list__foot';
+    const titles = document.createElement('div');
+    titles.className = 'dash-list__titles';
+    const nameEl = document.createElement('div');
+    nameEl.className = 'dash-list__name';
+    nameEl.textContent = name;
+    nameEl.title = name;
+    const meta = document.createElement('div');
+    meta.className = 'dash-list__meta';
+    meta.textContent = count === 1 ? '1 card' : `${count} cards`;
+    titles.append(nameEl, meta);
+
+    // The card itself opens the window; the icon (the website's pop-out) says so and does the same.
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'icon-btn';
+    btn.title = 'Open in its own window';
+    btn.setAttribute('aria-label', 'Open in its own window');
+    btn.innerHTML = POP_OUT_SVG; // a constant, never user data
+    btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        open();
+    });
+
+    foot.append(titles, btn);
+    card.append(thumb, foot);
+    return card;
+}
+
+/**
+ * Draw the dashboard cards, in the website's order.
  *
  * Built with `textContent` rather than innerHTML, like the rest of this renderer: a dashboard's name is user
  * data, and this page runs under a strict CSP precisely so that it can never become markup.
  */
 async function refreshDashboards() {
-    const select = el('dashboard-select');
-    const previous = select.value;
-    select.textContent = '';
-
     const dashboards = await window.lbcbot.getDashboards();
-
-    if (!dashboards || dashboards.length === 0) {
-        const option = document.createElement('option');
-        option.value = '';
-        option.textContent = 'Connect to list your dashboards';
-        select.appendChild(option);
-        return;
-    }
-
-    dashboards.forEach((d) => {
-        const option = document.createElement('option');
-        option.value = d.dashboardId;
-        option.textContent = d.name || `Dashboard ${d.dashboardId}`;
-        select.appendChild(option);
-    });
-    if (previous && dashboards.some((d) => String(d.dashboardId) === previous)) {
-        select.value = previous;
-    }
+    const rows = Array.isArray(dashboards) ? [...dashboards] : [];
+    rows.sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0));
+    const list = el('dashboard-list');
+    list.replaceChildren(...rows.map(dashboardCard));
+    list.hidden = rows.length === 0;
+    el('dashboard-empty').hidden = rows.length > 0;
+    // Offline, the list is empty because it can't be read, not because there are none (coming online re-reads it).
+    el('dashboard-empty-title').textContent = lbcOnline ? 'No dashboards yet' : 'Connect to see your dashboards';
+    el('open-dashboard').hidden = !lbcOnline;
 }
 
 /* ------------------------------------------------------------------ linked platforms */
@@ -2279,21 +2631,11 @@ function wire() {
     });
 
     el('refresh-overlays').addEventListener('click', refreshOverlays);
+    wireSceneMenu();
 
     el('refresh-dashboards').addEventListener('click', refreshDashboards);
-    el('open-dashboard').addEventListener('click', async () => {
-        // An empty value means "no specific dashboard" — the main process then loads the picker page instead.
-        el('dashboard-status').textContent = '';
-        const result = await window.lbcbot.openDashboard(el('dashboard-select').value || null);
-        /*
-         * The result used to be discarded, so a refusal looked like a dead button. The main process declines
-         * to open a dashboard it cannot sign in — otherwise the window lands on the public landing page and
-         * the app looks broken — so this is where that reason has to appear.
-         */
-        if (result && result.ok === false) {
-            el('dashboard-status').textContent = result.error || 'Could not open that dashboard.';
-        }
-    });
+    // No dashboards: no id, so the main process opens the website's dashboard list, which makes a first one.
+    el('open-dashboard').addEventListener('click', () => openDashboardFromPane(null));
 
     const persist = () => window.lbcbot.updateSettings({
         forwardObsEvents: el('forward-events').checked,

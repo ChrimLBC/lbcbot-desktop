@@ -1285,3 +1285,149 @@ button:focus-visible { outline: 2px solid rgba(var(--accent-rgb), 0.6); outline-
     .plan__spin { animation-duration: 2s; }
     .plan__apply { transition: none; }
 }
+
+/* ---- Dashboards: the website's dashboard cards (Dashboards.scss "Dashboard list") ----------------------------- */
+#pane-dashboards .pane__head, #pane-overlays .pane__head { grid-template-columns: auto minmax(0, 1fr) auto; }
+#pane-dashboards .pane__head h2, #pane-overlays .pane__head h2 { grid-row: span 2; }
+.pane__action { grid-row: span 2; margin-left: 0; }
+
+.dash-status:empty { display: none; }
+.dash-status { margin: 0 0 14px; }
+
+.dash-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: 16px;
+}
+
+.dash-list__card {
+    display: flex;
+    flex-direction: column;
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    overflow: hidden;
+    background: var(--card);
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.3);
+    color: var(--ink);
+    cursor: pointer;
+    transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
+}
+.dash-list__card:hover,
+.dash-list__card:focus-visible {
+    transform: translateY(-3px);
+    border-color: rgba(var(--accent-rgb), 0.55);
+    box-shadow: 0 12px 26px rgba(0, 0, 0, 0.45);
+    outline: none;
+}
+
+/* The dashboard's own arrangement in miniature: every tile in its card's colour. */
+.dash-list__thumb {
+    position: relative;
+    aspect-ratio: 16 / 9;
+    background: #12141d;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.11);
+}
+.dash-list__tile {
+    --tile-color: var(--muted);
+    position: absolute;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: color-mix(in srgb, var(--tile-color) 14%, transparent);
+    gap: 4px;
+    box-shadow: inset -1px -1px 0 rgba(255, 255, 255, 0.11);
+    color: var(--tile-color);
+    overflow: hidden;
+}
+.dash-list__tile svg { flex: 0 0 auto; width: 15px; height: 15px; }
+.dash-list__tile-more { font-size: 10px; font-weight: 700; opacity: 0.8; }
+.dash-list__thumb-empty {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--muted);
+    font-size: 12px;
+}
+
+.dash-list__foot {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px 12px 14px;
+}
+.dash-list__titles { flex: 1 1 auto; min-width: 0; }
+.dash-list__name {
+    font-weight: 600;
+    font-size: 15px;
+    color: #fff;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.dash-list__meta { font-size: 12px; color: var(--muted); }
+.dash-list__foot .icon-btn { flex: 0 0 auto; }
+
+.dash-empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
+    padding: 48px 16px;
+    border: 1px dashed var(--line);
+    border-radius: 14px;
+}
+.dash-empty__mark { grid-row: auto; }
+.dash-empty__title { margin: 0; font-size: 15px; font-weight: 600; color: #fff; }
+
+@media (prefers-reduced-motion: reduce) {
+    .dash-list__card { transition: none; }
+    .dash-list__card:hover, .dash-list__card:focus-visible { transform: none; }
+}
+
+/* ---- Overlays: the same cards; widgets drawn as their editor tag boxes (they can overlap, so outlined) ---------- */
+.ovl-card { cursor: default; container-type: inline-size; }
+/* A narrow card keeps the name and folds the button to its icon (the name stays in its tooltip). */
+@container (max-width: 330px) {
+    .ovl-add { width: 29px; padding: 0; justify-content: center; }
+    .ovl-add span { display: none; }
+}
+.ovl-card:hover { transform: none; border-color: var(--line); box-shadow: 0 6px 18px rgba(0, 0, 0, 0.3); }
+.ovl-tile {
+    background: color-mix(in srgb, var(--tile-color) 16%, transparent);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--tile-color) 75%, transparent);
+    border-radius: 2px;
+}
+.dash-list__meta.is-bad { color: var(--bad); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.ovl-add {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 6px;
+    height: 29px;
+    padding: 0 10px;
+    font-size: 12.5px;
+    white-space: nowrap;
+}
+.ovl-add svg { flex: 0 0 auto; width: 15px; height: 15px; }
+.ovl-add[aria-expanded="true"] { border-color: rgba(var(--accent-rgb), 0.65); background: rgba(var(--accent-rgb), 0.1); }
+.ovl-add.is-done, .ovl-add.is-done:disabled { opacity: 1; color: var(--on); border-color: rgba(52, 211, 153, 0.6); }
+.ovl-add.is-bad, .ovl-add.is-bad:disabled { opacity: 1; color: var(--bad); border-color: rgba(248, 113, 113, 0.6); }
+
+/* The scene menu: fixed so the pane's scroll box never clips it; placed by placeSceneMenu. */
+.scene-menu {
+    --plan-float: #1f2230;
+    position: fixed;
+    top: 0;
+    right: auto;
+    left: 0;
+    z-index: 40;
+    max-width: 280px;
+    max-height: min(320px, calc(100vh - 16px));
+    overflow-y: auto;
+}
+.scene-menu__label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.scene-menu .plan__menuitem svg { flex: 0 0 auto; width: 14px; height: 14px; color: var(--muted); }
+.scene-menu__note { margin: 0; padding: 7px 10px 3px; font-size: 12px; color: var(--muted); }
